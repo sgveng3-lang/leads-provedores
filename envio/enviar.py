@@ -10,7 +10,9 @@ hora. Descadastro = link no rodapé → Status "Descadastrado" pra sempre.
 
 Configuração (GitHub Secrets / variáveis de ambiente):
     PLANILHA_URL, PLANILHA_TOKEN            (mesmos do scraper)
-    SMTP_HOST (smtp.zoho.com), SMTP_PORT (465), SMTP_USUARIO, SMTP_SENHA
+    Zoho Mail pela API (funciona no plano GRATUITO) — ver envio/zoho.py:
+        ZOHO_CLIENT_ID, ZOHO_CLIENT_SECRET, ZOHO_REFRESH_TOKEN, ZOHO_REMETENTE
+    ou SMTP (planos pagos): SMTP_HOST, SMTP_PORT, SMTP_USUARIO, SMTP_SENHA
     REMETENTE_NOME (ex.: "Kmeas · SepiaStream")
 
 Repositório público: o log só mostra contagens, nunca e-mail/nome de provedor.
@@ -31,6 +33,7 @@ from urllib.parse import urlencode
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scraper"))
 from planilha import Planilha  # noqa: E402
+from zoho import EnvioRecusado, ZohoMail  # noqa: E402
 
 FLYER = "https://flyer.sepiastream.com"
 
@@ -106,34 +109,39 @@ def main():
             print("=" * 70, f"\nPara: {escolher_email(lead)}\nAssunto: {assunto}\n\n{texto}")
         return
 
-    usuario = os.environ["SMTP_USUARIO"]
+    usar_api = bool(os.environ.get("ZOHO_REFRESH_TOKEN"))
+    zoho = ZohoMail() if usar_api else None
+    usuario = zoho.remetente if zoho else os.environ["SMTP_USUARIO"]
     enviados = falhas = 0
     contexto = ssl.create_default_context()
     for i, lead in enumerate(leads):
         para = escolher_email(lead)
         assunto, texto, html = montar(lead, remetente, planilha.url)
-        msg = EmailMessage()
-        msg["From"] = formataddr((remetente, usuario))
-        msg["To"] = para
-        msg["Subject"] = assunto
-        msg["Message-ID"] = make_msgid(domain=usuario.split("@")[-1])
-        msg["List-Unsubscribe"] = f"<{planilha.url}?{urlencode({'sair': lead['cnpj'], 't': lead['sair']})}>"
-        msg.set_content(texto)
-        msg.add_alternative(html, subtype="html")
         try:
-            # uma conexão por e-mail: com minutos de intervalo, a sessão SMTP expiraria
-            with smtplib.SMTP_SSL(os.environ.get("SMTP_HOST", "smtp.zoho.com"), int(os.environ.get("SMTP_PORT", "465")),
-                                  context=contexto, timeout=60) as smtp:
-                smtp.login(usuario, os.environ["SMTP_SENHA"])
-                smtp.send_message(msg)
+            if zoho:
+                zoho.enviar(para, assunto, html, remetente)
+            else:
+                msg = EmailMessage()
+                msg["From"] = formataddr((remetente, usuario))
+                msg["To"] = para
+                msg["Subject"] = assunto
+                msg["Message-ID"] = make_msgid(domain=usuario.split("@")[-1])
+                msg["List-Unsubscribe"] = f"<{planilha.url}?{urlencode({'sair': lead['cnpj'], 't': lead['sair']})}>"
+                msg.set_content(texto)
+                msg.add_alternative(html, subtype="html")
+                # uma conexão por e-mail: com minutos de intervalo, a sessão SMTP expiraria
+                with smtplib.SMTP_SSL(os.environ.get("SMTP_HOST", "smtp.zoho.com"), int(os.environ.get("SMTP_PORT", "465")),
+                                      context=contexto, timeout=60) as smtp:
+                    smtp.login(usuario, os.environ["SMTP_SENHA"])
+                    smtp.send_message(msg)
             planilha._post({"acao": "marcar_enviado", "cnpj": lead["cnpj"], "para": para})
             enviados += 1
         except smtplib.SMTPRecipientsRefused:
             planilha._post({"acao": "marcar_enviado", "cnpj": lead["cnpj"], "para": f"RECUSADO {para}"})
             falhas += 1
-        except (smtplib.SMTPException, OSError) as erro:
-            # limite do provedor/conexão: para o dia aqui (tenta de novo amanhã)
-            print(f"parando: erro de envio ({type(erro).__name__})")
+        except (smtplib.SMTPException, OSError, EnvioRecusado, RuntimeError) as erro:
+            # limite do provedor/autenticação/conexão: para o dia aqui (tenta de novo amanhã)
+            print(f"parando: erro de envio ({type(erro).__name__}: {str(erro)[:80]})")
             falhas += 1
             break
         print(f"enviados: {enviados} | falhas: {falhas}")

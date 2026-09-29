@@ -21,7 +21,7 @@ concurrency:
 
 jobs:
   enviar:
-    # só roda depois que o SMTP estiver configurado
+    # só roda depois que a caixa de envio (API do Zoho ou SMTP) estiver configurada
     if: vars.ENVIO_ATIVO == 'sim'
     runs-on: ubuntu-latest
     timeout-minutes: 350
@@ -37,6 +37,10 @@ jobs:
         env:
           PLANILHA_URL: ${{ secrets.PLANILHA_URL }}
           PLANILHA_TOKEN: ${{ secrets.PLANILHA_TOKEN }}
+          ZOHO_CLIENT_ID: ${{ secrets.ZOHO_CLIENT_ID }}
+          ZOHO_CLIENT_SECRET: ${{ secrets.ZOHO_CLIENT_SECRET }}
+          ZOHO_REFRESH_TOKEN: ${{ secrets.ZOHO_REFRESH_TOKEN }}
+          ZOHO_REMETENTE: ${{ vars.ZOHO_REMETENTE }}
           SMTP_HOST: ${{ vars.SMTP_HOST || 'smtp.zoho.com' }}
           SMTP_PORT: ${{ vars.SMTP_PORT || '465' }}
           SMTP_USUARIO: ${{ secrets.SMTP_USUARIO }}
