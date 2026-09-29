@@ -6,33 +6,37 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+env:
+  NAVEGADOR: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0 Safari/537.36"
 jobs:
   rede:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: anatel
+      - name: anatel-ua-python
         run: |
-          curl -sS -o /dev/null -w "%{http_code}\n" --max-time 60 -I https://www.anatel.gov.br/dadosabertos/paineis_de_dados/acessos/acessos_banda_larga_fixa.zip
-      - name: receita
+          curl -sS -o /dev/null -w "%{http_code}\n" --max-time 60 -I -A "python-requests/2.32.3" https://www.anatel.gov.br/dadosabertos/paineis_de_dados/acessos/acessos_banda_larga_fixa.zip
+      - name: anatel-ua-navegador
         if: always()
         run: |
-          curl -sS -o /dev/null -w "%{http_code}\n" --max-time 60 -X PROPFIND -u "YggdBLfdninEJX9:" -H "Depth: 1" https://arquivos.receitafederal.gov.br/public.php/webdav/
-      - name: yahoo
+          curl -sS -o /dev/null -w "%{http_code}\n" --max-time 60 -I -A "$NAVEGADOR" https://www.anatel.gov.br/dadosabertos/paineis_de_dados/acessos/acessos_banda_larga_fixa.zip
+      - name: receita-ua-navegador
         if: always()
         run: |
-          curl -sS --max-time 30 -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/128.0 Safari/537.36" "https://br.search.yahoo.com/search?p=painsonline+provedor+internet+Pains+MG" | grep -q "painsonline.com.br"
-      - name: bing
+          curl -sS -o /dev/null -w "%{http_code}\n" --max-time 60 -A "$NAVEGADOR" -X PROPFIND -u "YggdBLfdninEJX9:" -H "Depth: 1" https://arquivos.receitafederal.gov.br/public.php/webdav/
+      - name: api-cnpjws
         if: always()
         run: |
-          curl -sS --max-time 30 -o /dev/null -w "%{http_code}\n" "https://www.bing.com/search?q=painsonline"
-      - name: site-provedor
+          curl -sS --max-time 30 -A "$NAVEGADOR" https://publica.cnpj.ws/cnpj/04573288000144 | grep -q "painsonline"
+      - name: api-receitaws
         if: always()
         run: |
-          curl -sS -o /dev/null -w "%{http_code}\n" --max-time 30 https://painsonline.com.br
-      - name: planilha
+          curl -sS --max-time 30 -A "$NAVEGADOR" https://receitaws.com.br/v1/cnpj/04573288000144 | grep -qi "painsonline"
+      - name: yahoo-pt
         if: always()
-        env:
-          PLANILHA_URL: ${{ secrets.PLANILHA_URL }}
         run: |
-          curl -sSL -o /dev/null -w "%{http_code}\n" --max-time 60 "$PLANILHA_URL"
+          curl -sS --max-time 30 -A "$NAVEGADOR" -H "Accept-Language: pt-BR,pt;q=0.9" "https://br.search.yahoo.com/search?p=painsonline+provedor+internet+Pains+MG&vl=lang_pt&fr=yfp-t" | grep -q "painsonline.com.br"
+      - name: bing-resultado
+        if: always()
+        run: |
+          curl -sS --max-time 30 -A "$NAVEGADOR" -H "Accept-Language: pt-BR" "https://www.bing.com/search?q=painsonline+provedor+internet+Pains+MG&cc=BR&setlang=pt-br" | grep -q "painsonline.com.br"
