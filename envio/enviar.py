@@ -107,6 +107,7 @@ def main():
     ap.add_argument("--min-acessos", type=int, default=200, help="foco: provedores pequenos/médios")
     ap.add_argument("--max-acessos", type=int, default=20000)
     ap.add_argument("--simular", action="store_true", help="não envia nem marca; mostra os e-mails (uso local)")
+    ap.add_argument("--teste-para", default="", help="modo teste: manda TUDO pra este endereço e não marca na planilha")
     args = ap.parse_args()
 
     planilha = Planilha()
@@ -129,8 +130,10 @@ def main():
     enviados = falhas = 0
     contexto = ssl.create_default_context()
     for i, lead in enumerate(leads):
-        para = escolher_email(lead)
+        para = args.teste_para or escolher_email(lead)
         assunto, texto, html = montar(lead, remetente, planilha.url)
+        if args.teste_para:
+            assunto = "[TESTE] " + assunto
         try:
             if zoho:
                 zoho.enviar(para, assunto, html, remetente)
@@ -148,7 +151,8 @@ def main():
                                       context=contexto, timeout=60) as smtp:
                     smtp.login(usuario, os.environ["SMTP_SENHA"])
                     smtp.send_message(msg)
-            planilha._post({"acao": "marcar_enviado", "cnpj": lead["cnpj"], "para": para})
+            if not args.teste_para:
+                planilha._post({"acao": "marcar_enviado", "cnpj": lead["cnpj"], "para": para})
             enviados += 1
         except smtplib.SMTPRecipientsRefused:
             planilha._post({"acao": "marcar_enviado", "cnpj": lead["cnpj"], "para": f"RECUSADO {para}"})
@@ -159,7 +163,7 @@ def main():
             falhas += 1
             break
         print(f"enviados: {enviados} | falhas: {falhas}")
-        if i < len(leads) - 1:
+        if i < len(leads) - 1 and not args.teste_para:
             time.sleep(random.uniform(args.intervalo_min, args.intervalo_max) * 60)
 
     resumo = f"envio: {enviados} enviados, {falhas} falhas, {len(leads)} pendentes selecionados"

@@ -11,6 +11,9 @@ on:
       limite:
         description: "Quantos e-mails nesta execução"
         default: "15"
+      teste_para:
+        description: "Modo teste: manda tudo pra este e-mail e não marca na planilha (vazio = envio real)"
+        default: ""
 
 permissions:
   contents: read
@@ -46,4 +49,6 @@ jobs:
           SMTP_USUARIO: ${{ secrets.SMTP_USUARIO }}
           SMTP_SENHA: ${{ secrets.SMTP_SENHA }}
           REMETENTE_NOME: ${{ vars.REMETENTE_NOME || 'Equipe SepiaStream' }}
-        run: python envio/enviar.py --limite "${{ inputs.limite || vars.ENVIO_LIMITE || '15' }}"
+        run: >
+          python envio/enviar.py --limite "${{ inputs.limite || vars.ENVIO_LIMITE || '15' }}"
+          --teste-para "${{ inputs.teste_para }}"
