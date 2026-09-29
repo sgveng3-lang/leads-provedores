@@ -152,10 +152,11 @@ function pendentes_(quantidade) {
       cnpj: l[col['CNPJ']], empresa: l[col['Empresa (Anatel)']], fantasia: l[col['Nome fantasia']],
       uf: l[col['UF principal']], municipios: l[col['Municípios']], acessos: Number(String(l[col['Acessos']]).replace(/\D/g, '')) || 0,
       emailReceita: l[col['E-mail (Receita)']], emailsSite: l[col['E-mails do site']],
-      sair: assinatura_(l[col['CNPJ']]),
     }))
     .sort((a, b) => b.acessos - a.acessos)
     .slice(0, quantidade);
+  // assinatura do descadastro só pros escolhidos (calcular pra milhares estoura o tempo do Google)
+  leads.forEach((lead) => { lead.sair = assinatura_(lead.cnpj); });
   return { ok: true, leads: leads };
 }
 
