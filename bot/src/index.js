@@ -24,8 +24,14 @@ const AJUDA =
   '*raspar MG,SP* — só as UFs indicadas\n' +
   '*status* — andamento da raspagem\n' +
   '*cancelar* — cancela a raspagem em andamento\n' +
-  '*planilha* — link da planilha\n' +
-  '*ajuda* — esta mensagem\n\n' +
+  '*planilha* — link da planilha\n\n' +
+  '📧 *E-mails de prospecção*\n' +
+  '*envio* — situação do envio\n' +
+  '*envio ligar* / *envio desligar* — envio automático (dias úteis 09:00)\n' +
+  '*envio limite 20* — e-mails por dia (máx. 40)\n' +
+  '*envio agora 5* — envia já N e-mails reais (máx. 15)\n' +
+  '*envio teste fulano@email.com* — 2 e-mails de teste só pra esse endereço\n\n' +
+  '*ajuda* — esta mensagem\n' +
   'Raspagem automática: toda segunda às 06:00.';
 
 const agora = () => Math.floor(Date.now() / 1000);
@@ -52,10 +58,11 @@ async function avisar(texto) {
 // ---------------- acompanhamento ----------------
 function agendar(ms) {
   clearTimeout(timer);
-  timer = setTimeout(() => ciclo().catch((e) => log.erro('ciclo', e.message)).finally(() => agendar(estado.execucao ? COM_EXECUCAO_MS : SEM_EXECUCAO_MS)), ms);
+  timer = setTimeout(() => ciclo().catch((e) => log.erro('ciclo', e.message)).finally(() => agendar(estado.execucao || estado.envioAvisar ? COM_EXECUCAO_MS : SEM_EXECUCAO_MS)), ms);
 }
 
 async function ciclo() {
+  await acompanharEnvio().catch((e) => log.erro('envio', e.message));
   if (estado.execucao) {
     const run = await gh.execucao(estado.execucao.runId);
     if (run.status !== 'completed') return;
@@ -129,6 +136,9 @@ async function comando(texto, quem) {
       );
     }
 
+    case 'envio':
+      return comandoEnvio(args, quem);
+
     case 'cancelar': {
       if (!estado.execucao) return avisar('Não há raspagem rodando.');
       await gh.cancelar(estado.execucao.runId);
@@ -140,6 +150,71 @@ async function comando(texto, quem) {
   }
 }
 
+// ---------------- e-mails ----------------
+const LIMITE_MAXIMO = 40; // teto seguro por dia pra uma caixa Zoho (ver conversa: bounces ~10/dia)
+
+async function comandoEnvio(args, quem) {
+  const sub = (args[0] || 'status').toLowerCase();
+  if (sub === 'status' || sub === 'situacao' || sub === 'situação') {
+    const [ligado, limite] = await Promise.all([gh.lerVariavel('ENVIO_LIGADO'), gh.lerVariavel('ENVIO_LIMITE')]);
+    const [ultima] = await gh.ultimasExecucoes(1, gh.ENVIO);
+    let texto = `📧 *Envio de e-mails*\nAutomático: ${ligado === 'sim' ? '🟢 LIGADO (dias úteis 09:00)' : '🔴 DESLIGADO'}\nLimite por dia: ${limite || 15}`;
+    if (ultima) {
+      const quando = new Date(ultima.created_at).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+      const r = ultima.status === 'completed' ? await gh.resumo(ultima.id, 'resumo-envio').catch(() => null) : null;
+      texto += `\nÚltimo envio: ${quando} — ${ultima.status === 'completed' ? (r ? `${r.enviados} enviados${r.teste ? ' (teste)' : ''}` : ultima.conclusion) : 'em andamento'}`;
+    }
+    return avisar(texto);
+  }
+  if (sub === 'ligar' || sub === 'desligar') {
+    await gh.gravarVariavel('ENVIO_LIGADO', sub === 'ligar' ? 'sim' : 'nao');
+    return avisar(sub === 'ligar'
+      ? '🟢 Envio automático LIGADO: dias úteis às 09:00, no limite configurado. Mande *envio desligar* pra pausar.'
+      : '🔴 Envio automático DESLIGADO. Nada sai até alguém mandar *envio ligar*.');
+  }
+  if (sub === 'limite') {
+    const n = Number(args[1]);
+    if (!Number.isInteger(n) || n < 1 || n > LIMITE_MAXIMO) return avisar(`Use um número de 1 a ${LIMITE_MAXIMO}. Ex.: *envio limite 20*`);
+    await gh.gravarVariavel('ENVIO_LIMITE', n);
+    return avisar(`✅ Limite ajustado: ${n} e-mails por dia.`);
+  }
+  if (sub === 'agora') {
+    const n = Number(args[1] || 5);
+    if (!Number.isInteger(n) || n < 1 || n > 15) return avisar('Use de 1 a 15. Ex.: *envio agora 5*');
+    await gh.dispararEnvio({ limite: n });
+    estado.envioAvisar = true;
+    salvarEstado(estado);
+    agendar(COM_EXECUCAO_MS);
+    return avisar(`📨 Enviando ${n} e-mail(s) reais agora, um a cada 8–15 min. Aviso quando terminar.`);
+  }
+  if (sub === 'teste') {
+    const email = (args[1] || '').toLowerCase();
+    if (!/^[^@\s]+@[^@\s]+\.[a-z]{2,}$/.test(email)) return avisar('Ex.: *envio teste fulano@gmail.com*');
+    await gh.dispararEnvio({ limite: 2, testePara: email });
+    estado.envioAvisar = true;
+    salvarEstado(estado);
+    agendar(COM_EXECUCAO_MS);
+    return avisar(`🧪 Mandando 2 e-mails de TESTE pra ${email} (nada é marcado na planilha).`);
+  }
+  return avisar('Opções: *envio*, *envio ligar*, *envio desligar*, *envio limite N*, *envio agora N*, *envio teste email*');
+}
+
+// avisa no grupo o resultado de cada envio que terminar (automático ou pedido)
+async function acompanharEnvio() {
+  const [ultima] = await gh.ultimasExecucoes(1, gh.ENVIO);
+  if (!ultima || ultima.status !== 'completed' || ultima.id <= (estado.ultimoEnvioVisto || 0)) return;
+  const primeiraVez = !estado.ultimoEnvioVisto;
+  estado.ultimoEnvioVisto = ultima.id;
+  salvarEstado(estado);
+  if (primeiraVez && !estado.envioAvisar) return; // não repete envio antigo ao ligar o bot
+  estado.envioAvisar = false;
+  salvarEstado(estado);
+  const r = await gh.resumo(ultima.id, 'resumo-envio').catch(() => null);
+  if (!r) return avisar(`⚠️ Um envio de e-mails terminou (${ultima.conclusion}), sem resumo.`);
+  return avisar(`📧 Envio ${r.teste ? 'de TESTE ' : ''}concluído: *${r.enviados}* enviados, ${r.falhas} falha(s)` +
+    (r.repetidos ? `, ${r.repetidos} endereço(s) repetido(s) pulado(s)` : '') + '.');
+}
+
 // ---------------- início ----------------
 const cliente = await conectar();
 
@@ -149,7 +224,7 @@ cliente.on('message', async (evento) => {
     if (!key || !estado.grupoJid || key.remoteJid !== estado.grupoJid) return; // só o grupo
     if (idsEnviadosPeloBot.has(key.id)) return; // eco do próprio bot
     const texto = textoDa(message).trim();
-    if (!texto || texto.length > 60) return;
+    if (!texto || texto.length > 80) return;
     await comando(texto, key.participant || 'dono');
   } catch (e) {
     log.erro('comando', e.message);

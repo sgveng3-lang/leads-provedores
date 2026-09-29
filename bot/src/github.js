@@ -33,9 +33,39 @@ export async function disparar({ ufs = 'TODAS', pedido }) {
   });
 }
 
-export async function ultimasExecucoes(quantidade = 5) {
-  const r = await gh(`/actions/workflows/${WORKFLOW}/runs?per_page=${quantidade}`);
+export async function ultimasExecucoes(quantidade = 5, workflow = WORKFLOW) {
+  const r = await gh(`/actions/workflows/${workflow}/runs?per_page=${quantidade}`);
   return (await r.json()).workflow_runs || [];
+}
+
+// ---------- envio de e-mails (workflow enviar.yml) ----------
+export const ENVIO = 'enviar.yml';
+
+export async function dispararEnvio({ limite, testePara = '' }) {
+  await gh(`/actions/workflows/${ENVIO}/dispatches`, {
+    method: 'POST',
+    body: JSON.stringify({ ref: 'main', inputs: { limite: String(limite), teste_para: testePara } }),
+  });
+}
+
+// Variáveis do repositório (ENVIO_LIGADO, ENVIO_LIMITE) — token precisa de
+// "Variables: Read and write".
+export async function lerVariavel(nome) {
+  const r = await fetch(`${API}/repos/${repo()}/actions/variables/${nome}`, {
+    headers: { Authorization: `Bearer ${process.env.GITHUB_TOKEN}`, Accept: 'application/vnd.github+json', 'User-Agent': 'leads-bot' },
+  });
+  if (r.status === 404) return null;
+  if (!r.ok) throw new Error(`GitHub variável ${nome}: HTTP ${r.status}`);
+  return (await r.json()).value;
+}
+
+export async function gravarVariavel(nome, valor) {
+  const atual = await lerVariavel(nome);
+  if (atual === null) {
+    await gh('/actions/variables', { method: 'POST', body: JSON.stringify({ name: nome, value: String(valor) }) });
+  } else {
+    await gh(`/actions/variables/${nome}`, { method: 'PATCH', body: JSON.stringify({ name: nome, value: String(valor) }) });
+  }
 }
 
 // O dispatch não devolve o id da execução: procura pelo pedido no título.
@@ -67,9 +97,9 @@ export async function cancelar(runId) {
 }
 
 // Resumo (só contagens) que o job "consolidar" publica como artefato "resumo".
-export async function resumo(runId) {
+export async function resumo(runId, nome = 'resumo') {
   const arts = (await (await gh(`/actions/runs/${runId}/artifacts?per_page=100`)).json()).artifacts || [];
-  const art = arts.find((a) => a.name === 'resumo');
+  const art = arts.find((a) => a.name === nome);
   if (!art) return null;
   const zip = Buffer.from(await (await gh(`/actions/artifacts/${art.id}/zip`)).arrayBuffer());
   return JSON.parse(primeiroArquivoDoZip(zip).toString('utf8'));
