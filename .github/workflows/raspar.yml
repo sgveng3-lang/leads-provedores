@@ -62,6 +62,12 @@ jobs:
           path: _dados/base.json.gz
           key: base-${{ steps.chave.outputs.chave }}
 
+      - uses: actions/cache/restore@v4
+        with:
+          path: _dados/cnpj_cache.json.gz
+          key: cnpj-${{ github.run_id }}
+          restore-keys: cnpj-
+
       - name: Raspar sites e gravar na planilha
         env:
           PLANILHA_URL: ${{ secrets.PLANILHA_URL }}
@@ -71,6 +77,12 @@ jobs:
           --uf "${{ inputs.uf }}" --limite "${{ inputs.limite }}"
           --min-acessos "${{ inputs.min_acessos }}" --max-acessos "${{ inputs.max_acessos }}"
           --pedido "${{ inputs.pedido }}"
+
+      - if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: _dados/cnpj_cache.json.gz
+          key: cnpj-${{ github.run_id }}
 
       # só contagens (repo público) — o bot lê este arquivo pra responder no WhatsApp
       - if: always()

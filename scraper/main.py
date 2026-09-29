@@ -23,18 +23,42 @@ import requests
 
 import anatel
 import receita
+from cnpj_api import ConsultaCnpj
 from planilha import Planilha
 from sites import Raspador
 
 DADOS = Path(__file__).resolve().parent.parent / "_dados"
 BASE = DADOS / "base.json.gz"
 RESUMO = DADOS / "resumo.json"
+CACHE_CNPJ = DADOS / "cnpj_cache.json.gz"  # {cnpj: {..., "em": epoch}} — consultas às APIs
+DESCARTE_DIAS = 30  # provedor sem e-mail só é tentado de novo depois disso
+UA_NAVEGADOR = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0 Safari/537.36"
+
+
+def _ler_json_gz(caminho, padrao):
+    try:
+        with gzip.open(caminho, "rt", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return padrao
+
+
+def _gravar_json_gz(caminho, dados):
+    DADOS.mkdir(exist_ok=True)
+    with gzip.open(caminho, "wt", encoding="utf-8") as f:
+        json.dump(dados, f)
 
 
 def cmd_chave(_):
-    modificado = requests.head(anatel.URL, timeout=120).headers.get("Last-Modified", "")
-    data = parsedate_to_datetime(modificado).strftime("%Y%m%d") if modificado else "sem-data"
-    print(f"chave=anatel-{data}_receita-{receita.mes_mais_recente()}")
+    modificado = ""
+    for tentativa in range(5):
+        try:
+            modificado = requests.head(anatel.URL, timeout=120, headers={"User-Agent": UA_NAVEGADOR}).headers.get("Last-Modified", "")
+            break
+        except requests.RequestException:
+            time.sleep(10 * (tentativa + 1))
+    data = parsedate_to_datetime(modificado).strftime("%Y%m%d") if modificado else time.strftime("%Y%m")
+    print(f"chave=anatel-{data}")
 
 
 def cmd_base(args):
@@ -43,7 +67,11 @@ def cmd_base(args):
     mes_ref, provedores = anatel.carregar_provedores()
     print(f"anatel: {len(provedores)} provedores (mês {mes_ref})")
     arquivos = [int(n) for n in args.receita_arquivos.split(",")] if args.receita_arquivos else range(10)
-    mes_receita, dados = receita.enriquecer(provedores.keys(), arquivos=arquivos)
+    try:
+        mes_receita, dados = receita.enriquecer(provedores.keys(), arquivos=arquivos)
+    except Exception as erro:  # no GitHub (EUA) o servidor da Receita recusa a conexão
+        print(f"receita em massa indisponível ({type(erro).__name__}); e-mails virão das APIs de CNPJ na raspagem")
+        mes_receita, dados = "", {}
     for cnpj, rec in dados.items():
         provedores[cnpj]["receita"] = rec
     with gzip.open(BASE, "wt", encoding="utf-8") as f:
@@ -96,12 +124,37 @@ def cmd_raspar(args):
         and (p.get("receita") or {}).get("situacao", "Ativa") == "Ativa"
     ]
 
+    cache = _ler_json_gz(CACHE_CNPJ, {})
+    agora = time.time()
+    recentes_sem_email = {c for c, v in cache.items() if v.get("sem_email_em", 0) > agora - DESCARTE_DIAS * 86400}
+    selecionados = [p for p in selecionados if p["cnpj"] not in recentes_sem_email]
+
     planilha = Planilha()
     ja_na_planilha = planilha.cnpjs()
     # primeiro os que ainda não estão na planilha, maiores primeiro
     selecionados.sort(key=lambda p: (_cnpj_formatado(p["cnpj"]) in ja_na_planilha, -p["acessos"]))
     lote = selecionados[: args.limite]
     print(f"filtro: {len(selecionados)} provedores elegíveis; processando {len(lote)}")
+
+    consulta = ConsultaCnpj()
+    consultados = 0
+    for prov in lote:
+        if prov.get("receita"):
+            continue
+        dados = cache.get(prov["cnpj"])
+        if not dados or "email" not in dados:
+            resultado = consulta.consultar(prov["cnpj"])
+            consultados += 1
+            if resultado is None:
+                continue
+            dados = {**resultado, "em": agora}
+            cache[prov["cnpj"]] = dados
+            if consultados % 10 == 0:
+                print(f"apis de cnpj: {consultados} consultados")
+                _gravar_json_gz(CACHE_CNPJ, cache)
+        prov["receita"] = {k: dados.get(k, "") for k in ("fantasia", "situacao", "email", "telefones")}
+    _gravar_json_gz(CACHE_CNPJ, cache)
+    lote = [p for p in lote if (p.get("receita") or {}).get("situacao", "Ativa") in ("Ativa", "")]
 
     raspador = Raspador()
 
@@ -117,6 +170,11 @@ def cmd_raspar(args):
     # regra: provedor sem nenhum e-mail (Receita ou site/busca) não entra na planilha
     linhas = [l for l in processadas if l["E-mails do site"] or l["E-mail (Receita)"]]
     sem_email = len(processadas) - len(linhas)
+    com_email_cnpjs = {l["CNPJ"] for l in linhas}
+    for prov in lote:
+        if _cnpj_formatado(prov["cnpj"]) not in com_email_cnpjs:
+            cache.setdefault(prov["cnpj"], {})["sem_email_em"] = agora
+    _gravar_json_gz(CACHE_CNPJ, cache)
     novos, atualizados = planilha.upsert(linhas)
     com_email = len(linhas)
     com_whats = sum(1 for l in linhas if l["WhatsApp"])
@@ -125,7 +183,7 @@ def cmd_raspar(args):
         "pedido": args.pedido,
         "filtros": f"UF={','.join(sorted(ufs))} limite={args.limite} acessos>={args.min_acessos}"
                    + (f" <= {args.max_acessos}" if args.max_acessos else ""),
-        "processados": len(processadas), "semEmailDescartados": sem_email,
+        "processados": len(processadas), "semEmailDescartados": sem_email, "consultasCnpj": consultados,
         "provedores": len(linhas), "novos": novos, "atualizados": atualizados,
         "comEmail": com_email, "comWhatsapp": com_whats, "comSite": com_site,
         "elegiveis": len(selecionados), "duracaoMin": round((time.time() - inicio) / 60, 1),

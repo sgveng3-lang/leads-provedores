@@ -3,18 +3,26 @@ inteiro. A Anatel publica um ZIP de ~1 GB com vários anos; só precisamos de
 um CSV dele."""
 
 import io
+import time
 import zipfile
 
 import requests
 
-UA = "leads-provedores/1.0 (+https://github.com/sgveng3-lang/leads-provedores)"
+UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0 Safari/537.36"
 
 
 class ArquivoRemoto(io.RawIOBase):
     def __init__(self, url, auth=None):
         self.url, self.auth, self.pos = url, auth, 0
-        cab = requests.head(url, auth=auth, timeout=120, allow_redirects=True, headers={"User-Agent": UA})
-        cab.raise_for_status()
+        for tentativa in range(5):
+            try:
+                cab = requests.head(url, auth=auth, timeout=120, allow_redirects=True, headers={"User-Agent": UA})
+                cab.raise_for_status()
+                break
+            except requests.RequestException:
+                if tentativa == 4:
+                    raise
+                time.sleep(10 * (tentativa + 1))
         self.tamanho = int(cab.headers["Content-Length"])
         self.sessao = requests.Session()
         self.sessao.headers["User-Agent"] = UA
