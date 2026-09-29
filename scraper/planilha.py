@@ -28,10 +28,10 @@ class Planilha:
             if dados.get("ok"):
                 return dados
             erro = str(dados.get("erro", ""))
-            if "lock" in erro.lower() or "timeout" in erro.lower() or "serviço" in erro.lower():
-                time.sleep(20 + random.uniform(0, 40))
-                continue
-            raise RuntimeError(f"planilha recusou: {erro}")
+            if "token inválido" in erro or "ação desconhecida" in erro:
+                raise RuntimeError(f"planilha recusou: {erro}")
+            # trava ocupada, cota de chamadas simultâneas do Google etc.: espera e tenta de novo
+            time.sleep(20 + random.uniform(0, 40))
         raise RuntimeError("planilha ocupada por tempo demais")
 
     def cnpjs(self):

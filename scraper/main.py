@@ -209,10 +209,13 @@ def cmd_raspar(args):
                 f"| {k} | {v} |\n" for k, v in resumo.items() if k != "planilha"))
 
 
-def cmd_ufs(_):
+def cmd_ufs(args):
     with gzip.open(BASE, "rt", encoding="utf-8") as f:
         base = json.load(f)["provedores"]
     ufs = sorted({p["uf_principal"] for p in base.values() if p.get("uf_principal")})
+    pedidas = {u.strip().upper() for u in (args.so or "").split(",") if u.strip() and u.strip().upper() != "TODAS"}
+    if pedidas:
+        ufs = [u for u in ufs if u in pedidas]
     print("ufs=" + json.dumps(ufs))
 
 
@@ -258,7 +261,8 @@ def main():
     r.add_argument("--pedido", default="manual")
     r.add_argument("--sem-registro", action="store_true", help="não grava linha em Execuções (a consolidação grava)")
     r.add_argument("--saida", default="", help="arquivo do resumo (padrão _dados/resumo.json)")
-    sub.add_parser("ufs")
+    u = sub.add_parser("ufs")
+    u.add_argument("--so", default="", help="ex.: PB,MT,RS (padrão: todas)")
     c = sub.add_parser("consolidar")
     c.add_argument("--pasta", required=True)
     c.add_argument("--pedido", default="manual")

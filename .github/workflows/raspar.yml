@@ -1,10 +1,13 @@
 name: raspar
-run-name: "raspar Brasil · ${{ inputs.pedido }}"
+run-name: "raspar ${{ inputs.ufs }} · ${{ inputs.pedido }}"
 
 # Raspa TODAS as UFs de uma vez: um job por UF (até 6 em paralelo).
 on:
   workflow_dispatch:
     inputs:
+      ufs:
+        description: "UFs (ex.: PB,MT,RS) ou TODAS"
+        default: "TODAS"
       min_acessos:
         description: "Mínimo de assinantes (acessos)"
         default: "200"
@@ -59,7 +62,7 @@ jobs:
           path: _dados/base.json.gz
           key: base-${{ steps.chave.outputs.chave }}
       - id: ufs
-        run: python scraper/main.py ufs >> "$GITHUB_OUTPUT"
+        run: python scraper/main.py ufs --so "${{ inputs.ufs }}" >> "$GITHUB_OUTPUT"
 
   raspar:
     needs: base
