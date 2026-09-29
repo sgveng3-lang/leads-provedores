@@ -1,21 +1,18 @@
 name: raspar
-run-name: "raspar ${{ inputs.uf }} · ${{ inputs.pedido }}"
+run-name: "raspar Brasil · ${{ inputs.pedido }}"
 
+# Raspa TODAS as UFs de uma vez: um job por UF (até 6 em paralelo).
 on:
   workflow_dispatch:
     inputs:
-      uf:
-        description: "UF(s) separadas por vírgula, ou TODAS"
-        required: true
-        default: "MG"
-      limite:
-        description: "Máximo de provedores nesta execução"
-        default: "100"
       min_acessos:
         description: "Mínimo de assinantes (acessos)"
         default: "200"
       max_acessos:
         description: "Máximo de assinantes (0 = sem limite)"
+        default: "0"
+      limite_por_uf:
+        description: "Máximo de provedores por UF (0 = todos)"
         default: "0"
       pedido:
         description: "Identificador do pedido (o bot preenche)"
@@ -29,62 +26,117 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  raspar:
+  base:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 60
+    outputs:
+      chave: ${{ steps.chave.outputs.chave }}
+      ufs: ${{ steps.ufs.outputs.ufs }}
+      inicio: ${{ steps.inicio.outputs.inicio }}
     steps:
+      - id: inicio
+        run: echo "inicio=$(date +%s)" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: scraper/requirements.txt
-
       - run: pip install -r scraper/requirements.txt
-
       - id: chave
         run: python scraper/main.py chave >> "$GITHUB_OUTPUT"
-
       - id: cache
         uses: actions/cache/restore@v4
         with:
           path: _dados/base.json.gz
           key: base-${{ steps.chave.outputs.chave }}
-
-      - name: Montar base (Anatel + Receita) — só quando muda o mês
+      - name: Montar base (Anatel) — só quando muda o mês
         if: steps.cache.outputs.cache-hit != 'true'
         run: python scraper/main.py base
-
       - if: steps.cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: _dados/base.json.gz
           key: base-${{ steps.chave.outputs.chave }}
+      - id: ufs
+        run: python scraper/main.py ufs >> "$GITHUB_OUTPUT"
 
+  raspar:
+    needs: base
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        uf: ${{ fromJSON(needs.base.outputs.ufs) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: scraper/requirements.txt
+      - run: pip install -r scraper/requirements.txt
+      - uses: actions/cache/restore@v4
+        with:
+          path: _dados/base.json.gz
+          key: base-${{ needs.base.outputs.chave }}
+          fail-on-cache-miss: true
       - uses: actions/cache/restore@v4
         with:
           path: _dados/cnpj_cache.json.gz
-          key: cnpj-${{ github.run_id }}
-          restore-keys: cnpj-
-
-      - name: Raspar sites e gravar na planilha
+          key: cnpj-${{ matrix.uf }}-${{ github.run_id }}
+          restore-keys: cnpj-${{ matrix.uf }}-
+      - name: Raspar ${{ matrix.uf }}
         env:
           PLANILHA_URL: ${{ secrets.PLANILHA_URL }}
           PLANILHA_TOKEN: ${{ secrets.PLANILHA_TOKEN }}
         run: >
-          python scraper/main.py raspar
-          --uf "${{ inputs.uf }}" --limite "${{ inputs.limite }}"
+          python scraper/main.py raspar --uf "${{ matrix.uf }}"
+          --limite "${{ inputs.limite_por_uf }}"
           --min-acessos "${{ inputs.min_acessos }}" --max-acessos "${{ inputs.max_acessos }}"
-          --pedido "${{ inputs.pedido }}"
-
+          --pedido "${{ inputs.pedido }}" --sem-registro
+          --saida "_dados/resumo-${{ matrix.uf }}.json"
       - if: always()
         uses: actions/cache/save@v4
         with:
           path: _dados/cnpj_cache.json.gz
-          key: cnpj-${{ github.run_id }}
+          key: cnpj-${{ matrix.uf }}-${{ github.run_id }}
+      # só contagens (repo público)
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: resumo-${{ matrix.uf }}
+          path: _dados/resumo-${{ matrix.uf }}.json
+          if-no-files-found: ignore
+          retention-days: 3
 
-      # só contagens (repo público) — o bot lê este arquivo pra responder no WhatsApp
+  consolidar:
+    needs: [base, raspar]
+    if: always() && needs.base.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: scraper/requirements.txt
+      - run: pip install -r scraper/requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: resumo-*
+          path: _dados/resumos
+      - name: Consolidar
+        env:
+          PLANILHA_URL: ${{ secrets.PLANILHA_URL }}
+          PLANILHA_TOKEN: ${{ secrets.PLANILHA_TOKEN }}
+        run: >
+          python scraper/main.py consolidar --pasta _dados/resumos
+          --pedido "${{ inputs.pedido }}" --inicio "${{ needs.base.outputs.inicio }}"
+      # só contagens — o bot lê este resumo
       - if: always()
         uses: actions/upload-artifact@v4
         with:

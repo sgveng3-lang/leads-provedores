@@ -2,7 +2,9 @@
 
     python main.py chave                      # identifica a versão dos dados (cache)
     python main.py base [--receita-arquivos 0,1]
-    python main.py raspar --uf MG,SP --limite 100 [--min-acessos 200] [--max-acessos 0]
+    python main.py ufs                        # UFs da base, em JSON (matriz do GitHub)
+    python main.py raspar --uf MG --limite 0  # 0 = todos os provedores da UF
+    python main.py consolidar --pasta _dados/resumos   # soma os resumos das UFs
 
 IMPORTANTE: o repositório é público e os logs do GitHub Actions também. Este
 script só imprime CONTAGENS — nunca nome, e-mail ou telefone de provedor.
@@ -133,7 +135,7 @@ def cmd_raspar(args):
     ja_na_planilha = planilha.cnpjs()
     # primeiro os que ainda não estão na planilha, maiores primeiro
     selecionados.sort(key=lambda p: (_cnpj_formatado(p["cnpj"]) in ja_na_planilha, -p["acessos"]))
-    lote = selecionados[: args.limite]
+    lote = selecionados[: args.limite] if args.limite else selecionados
     print(f"filtro: {len(selecionados)} provedores elegíveis; processando {len(lote)}")
 
     consulta = ConsultaCnpj()
@@ -193,15 +195,51 @@ def cmd_raspar(args):
         "comEmail": com_email, "comWhatsapp": com_whats, "comSite": com_site,
         "elegiveis": len(selecionados), "duracaoMin": round((time.time() - inicio) / 60, 1),
     }
-    resumo["planilha"] = planilha.registrar_execucao(resumo)
-    DADOS.mkdir(exist_ok=True)
-    RESUMO.write_text(json.dumps(resumo, ensure_ascii=False, indent=2), encoding="utf-8")
+    if not args.sem_registro:
+        resumo["planilha"] = planilha.registrar_execucao(resumo)
+    saida = Path(args.saida) if args.saida else RESUMO
+    saida.parent.mkdir(parents=True, exist_ok=True)
+    saida.write_text(json.dumps(resumo, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"resumo: {len(processadas)} processados | {sem_email} sem e-mail (descartados) | {len(linhas)} gravados | {novos} novos | {atualizados} atualizados | "
           f"{com_site} com site | {com_email} com e-mail | {com_whats} com WhatsApp | {resumo['duracaoMin']} min")
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:
         with open(summary, "a", encoding="utf-8") as f:
             f.write(f"### Raspagem {args.pedido}\n\n| | |\n|---|---|\n" + "".join(
+                f"| {k} | {v} |\n" for k, v in resumo.items() if k != "planilha"))
+
+
+def cmd_ufs(_):
+    with gzip.open(BASE, "rt", encoding="utf-8") as f:
+        base = json.load(f)["provedores"]
+    ufs = sorted({p["uf_principal"] for p in base.values() if p.get("uf_principal")})
+    print("ufs=" + json.dumps(ufs))
+
+
+SOMAVEIS = ("processados", "semEmailDescartados", "consultasCnpj", "provedores", "novos", "atualizados",
+            "comEmail", "comWhatsapp", "comSite", "elegiveis")
+
+
+def cmd_consolidar(args):
+    arquivos = sorted(Path(args.pasta).rglob("*.json"))
+    total = {k: 0 for k in SOMAVEIS}
+    ufs_ok = []
+    for arq in arquivos:
+        r = json.loads(arq.read_text(encoding="utf-8"))
+        for k in SOMAVEIS:
+            total[k] += r.get(k, 0) or 0
+        ufs_ok.append(r.get("filtros", "").split("UF=")[-1].split()[0])
+    resumo = {"pedido": args.pedido, "filtros": f"Brasil — {len(ufs_ok)} UFs concluídas", **total,
+              "duracaoMin": round((time.time() - args.inicio) / 60, 1) if args.inicio else 0}
+    resumo["planilha"] = Planilha().registrar_execucao(resumo)
+    RESUMO.parent.mkdir(parents=True, exist_ok=True)
+    RESUMO.write_text(json.dumps(resumo, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"consolidado: {len(ufs_ok)} UFs | {total['processados']} processados | {total['provedores']} gravados | "
+          f"{total['novos']} novos | {total['comWhatsapp']} com WhatsApp")
+    summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary:
+        with open(summary, "a", encoding="utf-8") as f:
+            f.write(f"### Raspagem {args.pedido} (Brasil)\n\n| | |\n|---|---|\n" + "".join(
                 f"| {k} | {v} |\n" for k, v in resumo.items() if k != "planilha"))
 
 
@@ -218,8 +256,16 @@ def main():
     r.add_argument("--max-acessos", type=int, default=0)
     r.add_argument("--paralelos", type=int, default=8)
     r.add_argument("--pedido", default="manual")
+    r.add_argument("--sem-registro", action="store_true", help="não grava linha em Execuções (a consolidação grava)")
+    r.add_argument("--saida", default="", help="arquivo do resumo (padrão _dados/resumo.json)")
+    sub.add_parser("ufs")
+    c = sub.add_parser("consolidar")
+    c.add_argument("--pasta", required=True)
+    c.add_argument("--pedido", default="manual")
+    c.add_argument("--inicio", type=float, default=0, help="epoch do início da execução")
     args = ap.parse_args()
-    {"chave": cmd_chave, "base": cmd_base, "raspar": cmd_raspar}[args.cmd](args)
+    {"chave": cmd_chave, "base": cmd_base, "raspar": cmd_raspar, "ufs": cmd_ufs,
+     "consolidar": cmd_consolidar}[args.cmd](args)
 
 
 if __name__ == "__main__":

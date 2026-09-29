@@ -77,7 +77,7 @@ def _receitaws(cnpj):
 
 
 # (nome, função, segundos mínimos entre consultas na mesma API)
-APIS = [("opencnpj", _opencnpj, 0.3), ("cnpja", _cnpja, 12), ("cnpjws", _cnpjws, 21), ("receitaws", _receitaws, 21)]
+APIS = [("opencnpj", _opencnpj, 0.5), ("cnpja", _cnpja, 12), ("cnpjws", _cnpjws, 21), ("receitaws", _receitaws, 21)]
 
 
 class ConsultaCnpj:

@@ -2,6 +2,8 @@
 URL e token vêm do ambiente (GitHub Secrets): PLANILHA_URL, PLANILHA_TOKEN."""
 
 import os
+import random
+import time
 
 import requests
 
@@ -12,21 +14,30 @@ class Planilha:
         self.token = token or os.environ["PLANILHA_TOKEN"]
 
     def _post(self, corpo):
-        for tentativa in range(4):
+        """Várias UFs gravam em paralelo: o Apps Script tem uma trava e recusa com
+        'Lock timeout' quem chega enquanto outra grava — aí espera e tenta de novo."""
+        for tentativa in range(30):
             try:
-                resp = requests.post(self.url, json={"token": self.token, **corpo}, timeout=300)
+                resp = requests.post(self.url, json={"token": self.token, **corpo}, timeout=360)
                 dados = resp.json()
-                if not dados.get("ok"):
-                    raise RuntimeError(f"planilha recusou: {dados.get('erro')}")
-                return dados
             except (requests.RequestException, ValueError):
-                if tentativa == 3:
+                if tentativa == 29:
                     raise
+                time.sleep(20 + random.uniform(0, 20))
+                continue
+            if dados.get("ok"):
+                return dados
+            erro = str(dados.get("erro", ""))
+            if "lock" in erro.lower() or "timeout" in erro.lower() or "serviço" in erro.lower():
+                time.sleep(20 + random.uniform(0, 40))
+                continue
+            raise RuntimeError(f"planilha recusou: {erro}")
+        raise RuntimeError("planilha ocupada por tempo demais")
 
     def cnpjs(self):
         return set(self._post({"acao": "cnpjs"})["cnpjs"])
 
-    def upsert(self, linhas, lote=100):
+    def upsert(self, linhas, lote=300):
         novos = atualizados = 0
         for i in range(0, len(linhas), lote):
             r = self._post({"acao": "upsert", "linhas": linhas[i:i + lote]})
