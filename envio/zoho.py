@@ -57,11 +57,30 @@ class ZohoMail:
                 raise RuntimeError("a caixa ZOHO_REMETENTE não pertence a este login do Zoho")
         return self._conta
 
-    def enviar(self, para, assunto, html, nome_remetente=""):
+    def anexar(self, caminho):
+        """Sobe o arquivo pra caixa (upload bruto) e devolve a referência pro envio."""
+        caminho = Path(caminho)
+        for tentativa in range(2):
+            r = requests.post(f"{MAIL}/api/accounts/{self.conta()}/messages/attachments",
+                              params={"fileName": caminho.name}, data=caminho.read_bytes(),
+                              headers={**self._cabecalhos(), "Content-Type": "application/octet-stream"}, timeout=120)
+            if r.status_code == 401 and tentativa == 0:
+                self._renovar()
+                continue
+            if r.status_code >= 400:
+                raise EnvioRecusado(f"anexo recusado: HTTP {r.status_code}")
+            d = r.json().get("data") or {}
+            d = d[0] if isinstance(d, list) else d
+            return {k: d[k] for k in ("storeName", "attachmentPath", "attachmentName")}
+        raise EnvioRecusado("token recusado duas vezes (anexo)")
+
+    def enviar(self, para, assunto, html, nome_remetente="", anexo=None):
         corpo = {
             "fromAddress": f'"{nome_remetente}" <{self.remetente}>' if nome_remetente else self.remetente,
             "toAddress": para, "subject": assunto, "content": html, "mailFormat": "html",
         }
+        if anexo:
+            corpo["attachments"] = [self.anexar(anexo)]  # upload por e-mail: a referência vale pra uma mensagem
         for tentativa in range(2):
             r = requests.post(f"{MAIL}/api/accounts/{self.conta()}/messages", json=corpo,
                               headers=self._cabecalhos(), timeout=60)

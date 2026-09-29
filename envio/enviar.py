@@ -36,6 +36,7 @@ from planilha import Planilha  # noqa: E402
 from zoho import EnvioRecusado, ZohoMail  # noqa: E402
 
 FLYER = "https://flyer.sepiastream.com"
+ANEXO_PADRAO = Path(__file__).resolve().parent / "anexos" / "SepiaStream_SVA_Provedores.pdf"
 
 # prioridade de e-mail: institucional do site (comercial/contato...) > Receita
 PREFERENCIA = ("comercial", "vendas", "contato", "atendimento", "sac", "diretoria", "adm", "financeiro")
@@ -81,7 +82,7 @@ Vi que vocês atendem {base} em {cidade(lead)} e queria apresentar o SepiaStream
 • Ajuda na composição do plano entre internet e SVA.
 • Ativação simples, por lista de assinantes.
 
-Montei uma página com os pacotes e um simulador com os números do provedor:
+Segue em anexo nossa apresentação (PDF, 2 páginas). A versão online tem os pacotes e um simulador com os números do provedor:
 {FLYER}
 
 Se fizer sentido, é só responder este e-mail que eu explico em 15 minutos.
@@ -107,6 +108,7 @@ def main():
     ap.add_argument("--min-acessos", type=int, default=200, help="foco: provedores pequenos/médios")
     ap.add_argument("--max-acessos", type=int, default=20000)
     ap.add_argument("--simular", action="store_true", help="não envia nem marca; mostra os e-mails (uso local)")
+    ap.add_argument("--anexo", default=str(ANEXO_PADRAO), help="PDF anexado em cada e-mail ('' = sem anexo)")
     ap.add_argument("--teste-para", default="", help="modo teste: manda TUDO pra este endereço e não marca na planilha")
     args = ap.parse_args()
 
@@ -136,7 +138,7 @@ def main():
             assunto = "[TESTE] " + assunto
         try:
             if zoho:
-                zoho.enviar(para, assunto, html, remetente)
+                zoho.enviar(para, assunto, html, remetente, anexo=args.anexo or None)
             else:
                 msg = EmailMessage()
                 msg["From"] = formataddr((remetente, usuario))
@@ -146,6 +148,9 @@ def main():
                 msg["List-Unsubscribe"] = f"<{planilha.url}?{urlencode({'sair': lead['cnpj'], 't': lead['sair']})}>"
                 msg.set_content(texto)
                 msg.add_alternative(html, subtype="html")
+                if args.anexo:
+                    msg.add_attachment(Path(args.anexo).read_bytes(), maintype="application", subtype="pdf",
+                                       filename=Path(args.anexo).name)
                 # uma conexão por e-mail: com minutos de intervalo, a sessão SMTP expiraria
                 with smtplib.SMTP_SSL(os.environ.get("SMTP_HOST", "smtp.zoho.com"), int(os.environ.get("SMTP_PORT", "465")),
                                       context=contexto, timeout=60) as smtp:
