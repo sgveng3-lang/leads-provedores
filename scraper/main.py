@@ -112,16 +112,20 @@ def cmd_raspar(args):
             return _linha(prov, {})
 
     with ThreadPoolExecutor(args.paralelos) as pool:
-        linhas = list(pool.map(processar, lote))
+        processadas = list(pool.map(processar, lote))
 
+    # regra: provedor sem nenhum e-mail (Receita ou site/busca) não entra na planilha
+    linhas = [l for l in processadas if l["E-mails do site"] or l["E-mail (Receita)"]]
+    sem_email = len(processadas) - len(linhas)
     novos, atualizados = planilha.upsert(linhas)
-    com_email = sum(1 for l in linhas if l["E-mails do site"] or l["E-mail (Receita)"])
+    com_email = len(linhas)
     com_whats = sum(1 for l in linhas if l["WhatsApp"])
     com_site = sum(1 for l in linhas if l["Site"])
     resumo = {
         "pedido": args.pedido,
         "filtros": f"UF={','.join(sorted(ufs))} limite={args.limite} acessos>={args.min_acessos}"
                    + (f" <= {args.max_acessos}" if args.max_acessos else ""),
+        "processados": len(processadas), "semEmailDescartados": sem_email,
         "provedores": len(linhas), "novos": novos, "atualizados": atualizados,
         "comEmail": com_email, "comWhatsapp": com_whats, "comSite": com_site,
         "elegiveis": len(selecionados), "duracaoMin": round((time.time() - inicio) / 60, 1),
@@ -129,7 +133,7 @@ def cmd_raspar(args):
     resumo["planilha"] = planilha.registrar_execucao(resumo)
     DADOS.mkdir(exist_ok=True)
     RESUMO.write_text(json.dumps(resumo, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"resumo: {len(linhas)} provedores | {novos} novos | {atualizados} atualizados | "
+    print(f"resumo: {len(processadas)} processados | {sem_email} sem e-mail (descartados) | {len(linhas)} gravados | {novos} novos | {atualizados} atualizados | "
           f"{com_site} com site | {com_email} com e-mail | {com_whats} com WhatsApp | {resumo['duracaoMin']} min")
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:
