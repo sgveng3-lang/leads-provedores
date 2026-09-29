@@ -114,9 +114,25 @@ def main():
 
     planilha = Planilha()
     # a planilha devolve os maiores primeiro; filtramos a faixa-alvo e os sem e-mail comercial aqui
-    candidatos = planilha._post({"acao": "pendentes", "quantidade": 800})["leads"]
-    leads = [l for l in candidatos
-             if args.min_acessos <= int(l.get("acessos") or 0) <= args.max_acessos and escolher_email(l)][: args.limite]
+    resposta = planilha._post({"acao": "pendentes", "quantidade": 800})
+    ja_usados = {e.lower() for e in resposta.get("enviados", [])}
+    leads, repetidos = [], []
+    for lead in resposta["leads"]:
+        email = escolher_email(lead)
+        if not email or not args.min_acessos <= int(lead.get("acessos") or 0) <= args.max_acessos:
+            continue
+        if email.lower() in ja_usados:  # mesmo endereço de outro CNPJ já recebeu: não repete
+            repetidos.append((lead, email))
+            continue
+        ja_usados.add(email.lower())
+        leads.append(lead)
+        if len(leads) >= args.limite:
+            break
+    if not args.simular and not args.teste_para:
+        for lead, email in repetidos:
+            planilha._post({"acao": "marcar_enviado", "cnpj": lead["cnpj"], "para": f"REPETIDO {email}", "status": "Endereço repetido"})
+    if repetidos:
+        print(f"endereços repetidos (marcados sem enviar): {len(repetidos)}")
     remetente = os.environ.get("REMETENTE_NOME", "Equipe SepiaStream")
     print(f"pendentes nesta execução: {len(leads)}")
 

@@ -23,10 +23,10 @@ const COLUNAS = [
   'E-mail (Receita)', 'Telefone (Receita)', 'Situação (Receita)',
   'Site', 'E-mails do site', 'WhatsApp', 'Telefones do site',
   'Status', 'Observações', 'Primeira captura', 'Atualizado em',
-  'Enviado em', 'Enviado para',
+  'Enviado em', 'Enviado para', 'Já enviado',
 ];
 // colunas que o scraper nunca sobrescreve (suas + as do envio de e-mail)
-const COLUNAS_DO_USUARIO = ['Status', 'Observações', 'Enviado em', 'Enviado para'];
+const COLUNAS_DO_USUARIO = ['Status', 'Observações', 'Enviado em', 'Enviado para', 'Já enviado'];
 const COLUNAS_EXECUCOES = ['Data', 'Pedido', 'Filtros', 'Provedores', 'Novos', 'Atualizados', 'Com e-mail', 'Com WhatsApp', 'Duração (min)'];
 
 function doGet(e) {
@@ -72,7 +72,7 @@ function doPost(e) {
     if (corpo.acao === 'execucao') return json_(registrarExecucao_(corpo.execucao || {}));
     if (corpo.acao === 'cnpjs') return json_({ ok: true, cnpjs: cnpjsExistentes_() });
     if (corpo.acao === 'pendentes') return json_(pendentes_(corpo.quantidade || 20));
-    if (corpo.acao === 'marcar_enviado') return json_(marcarEnviado_(corpo.cnpj, corpo.para));
+    if (corpo.acao === 'marcar_enviado') return json_(marcarEnviado_(corpo.cnpj, corpo.para, corpo.status));
     return json_({ ok: false, erro: 'ação desconhecida' });
   } catch (erro) {
     return json_({ ok: false, erro: String(erro) });
@@ -114,7 +114,8 @@ function upsert_(linhas) {
     if (!cnpj) return;
     const i = indicePorCnpj[cnpj];
     if (i === undefined) {
-      const linha = COLUNAS.map((c) => (c === 'Primeira captura' || c === 'Atualizado em') ? agora : (c === 'Status' ? 'Novo' : (dados[c] ?? '')));
+      const linha = COLUNAS.map((c) => (c === 'Primeira captura' || c === 'Atualizado em') ? agora
+        : (c === 'Status' ? 'Novo' : (c === 'Já enviado' ? 'NÃO' : (dados[c] ?? ''))));
       atuais.push(linha);
       indicePorCnpj[cnpj] = atuais.length - 1;
       novos++;
@@ -141,12 +142,25 @@ function upsert_(linhas) {
 // com algum e-mail. Maiores provedores primeiro.
 function pendentes_(quantidade) {
   const aba = aba_(ABA_PROVEDORES, COLUNAS);
+  aba.getRange(1, 1, 1, COLUNAS.length).setValues([COLUNAS]).setFontWeight('bold');
   const n = aba.getLastRow() - 1;
-  if (n < 1) return { ok: true, leads: [] };
+  if (n < 1) return { ok: true, leads: [], enviados: [] };
   const col = {};
   COLUNAS.forEach((c, i) => { col[c] = i; });
-  const leads = aba.getRange(2, 1, n, COLUNAS.length).getDisplayValues()
-    .filter((l) => ['', 'Novo'].includes(l[col['Status']]) && !l[col['Enviado em']]
+  const linhas = aba.getRange(2, 1, n, COLUNAS.length).getDisplayValues();
+
+  // "Já enviado" = SIM é o controle; linhas antigas sem a coluna preenchida contam
+  // como SIM se já têm data de envio (e a planilha é corrigida aqui mesmo)
+  const jaEnviado = linhas.map((l) => l[col['Já enviado']] === 'SIM' || (!!l[col['Enviado em']]));
+  const corrigir = linhas.map((l, i) => [jaEnviado[i] ? 'SIM' : (l[col['Já enviado']] || 'NÃO')]);
+  aba.getRange(2, col['Já enviado'] + 1, n, 1).setValues(corrigir);
+
+  // endereços que já receberam e-mail (por qualquer CNPJ): o envio não repete
+  const enviados = linhas.map((l) => String(l[col['Enviado para']] || '').replace(/^RECUSADO\s+|^REPETIDO\s+/, '').toLowerCase())
+    .filter((e) => e.includes('@'));
+
+  const leads = linhas
+    .filter((l, i) => !jaEnviado[i] && ['', 'Novo'].includes(l[col['Status']])
       && (l[col['E-mails do site']] || l[col['E-mail (Receita)']]))
     .map((l) => ({
       cnpj: l[col['CNPJ']], empresa: l[col['Empresa (Anatel)']], fantasia: l[col['Nome fantasia']],
@@ -157,10 +171,10 @@ function pendentes_(quantidade) {
     .slice(0, quantidade);
   // assinatura do descadastro só pros escolhidos (calcular pra milhares estoura o tempo do Google)
   leads.forEach((lead) => { lead.sair = assinatura_(lead.cnpj); });
-  return { ok: true, leads: leads };
+  return { ok: true, leads: leads, enviados: Array.from(new Set(enviados)) };
 }
 
-function marcarEnviado_(cnpj, para) {
+function marcarEnviado_(cnpj, para, status) {
   const aba = aba_(ABA_PROVEDORES, COLUNAS);
   const n = aba.getLastRow() - 1;
   const cnpjs = n > 0 ? aba.getRange(2, 1, n, 1).getDisplayValues() : [];
@@ -168,7 +182,8 @@ function marcarEnviado_(cnpj, para) {
   if (i < 0) return { ok: false, erro: 'cnpj não encontrado' };
   const linha = i + 2;
   const agora = Utilities.formatDate(new Date(), 'America/Sao_Paulo', 'yyyy-MM-dd HH:mm');
-  aba.getRange(linha, COLUNAS.indexOf('Status') + 1).setValue('Enviado');
+  aba.getRange(linha, COLUNAS.indexOf('Status') + 1).setValue(status || 'Enviado');
+  aba.getRange(linha, COLUNAS.indexOf('Já enviado') + 1).setValue('SIM');
   aba.getRange(linha, COLUNAS.indexOf('Enviado em') + 1).setValue(agora);
   aba.getRange(linha, COLUNAS.indexOf('Enviado para') + 1).setValue(para || '');
   return { ok: true };
