@@ -41,10 +41,19 @@ FLYER = "https://flyer.sepiastream.com"
 PREFERENCIA = ("comercial", "vendas", "contato", "atendimento", "sac", "diretoria", "adm", "financeiro")
 
 
+# e-mail de escritório de contabilidade/jurídico/fiscal: ninguém ali lê proposta comercial
+RE_NAO_COMERCIAL = re.compile(r"fiscal|contab|contador|societ|juridic|nfe|nf-e|notas?fisc|escrit|dp|rh|tribut|cobranca|boleto", re.I)
+
+
 def escolher_email(lead):
-    do_site = [e.strip() for e in (lead.get("emailsSite") or "").split(",") if "@" in e]
-    do_site.sort(key=lambda e: next((i for i, p in enumerate(PREFERENCIA) if e.startswith(p)), 99))
-    return (do_site or [lead.get("emailReceita", "").strip()])[0]
+    """E-mail comercial do provedor, ou None se só houver endereço de contabilidade/fiscal."""
+    candidatos = [e.strip() for e in (lead.get("emailsSite") or "").split(",") if "@" in e]
+    candidatos.sort(key=lambda e: next((i for i, p in enumerate(PREFERENCIA) if e.startswith(p)), 99))
+    receita = (lead.get("emailReceita") or "").strip()
+    if "@" in receita:
+        candidatos.append(receita)
+    bons = [e for e in candidatos if not RE_NAO_COMERCIAL.search(e.split("@")[0])]
+    return bons[0] if bons else None
 
 
 def nome_do_provedor(lead):
@@ -95,11 +104,16 @@ def main():
     ap.add_argument("--limite", type=int, default=15, help="e-mails por execução")
     ap.add_argument("--intervalo-min", type=float, default=8, help="minutos mínimos entre e-mails")
     ap.add_argument("--intervalo-max", type=float, default=15, help="minutos máximos entre e-mails")
+    ap.add_argument("--min-acessos", type=int, default=200, help="foco: provedores pequenos/médios")
+    ap.add_argument("--max-acessos", type=int, default=20000)
     ap.add_argument("--simular", action="store_true", help="não envia nem marca; mostra os e-mails (uso local)")
     args = ap.parse_args()
 
     planilha = Planilha()
-    leads = planilha._post({"acao": "pendentes", "quantidade": args.limite})["leads"]
+    # a planilha devolve os maiores primeiro; filtramos a faixa-alvo e os sem e-mail comercial aqui
+    candidatos = planilha._post({"acao": "pendentes", "quantidade": 800})["leads"]
+    leads = [l for l in candidatos
+             if args.min_acessos <= int(l.get("acessos") or 0) <= args.max_acessos and escolher_email(l)][: args.limite]
     remetente = os.environ.get("REMETENTE_NOME", "Equipe SepiaStream")
     print(f"pendentes nesta execução: {len(leads)}")
 
