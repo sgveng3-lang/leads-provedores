@@ -12,22 +12,27 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: anatel
-        run: curl -sS -o /dev/null -w "%{http_code}\n" --max-time 60 -I https://www.anatel.gov.br/dadosabertos/paineis_de_dados/acessos/acessos_banda_larga_fixa.zip
+        run: |
+          curl -sS -o /dev/null -w "%{http_code}\n" --max-time 60 -I https://www.anatel.gov.br/dadosabertos/paineis_de_dados/acessos/acessos_banda_larga_fixa.zip
       - name: receita
         if: always()
-        run: curl -sS -o /dev/null -w "%{http_code}\n" --max-time 60 -X PROPFIND -u "YggdBLfdninEJX9:" -H "Depth: 1" https://arquivos.receitafederal.gov.br/public.php/webdav/
+        run: |
+          curl -sS -o /dev/null -w "%{http_code}\n" --max-time 60 -X PROPFIND -u "YggdBLfdninEJX9:" -H "Depth: 1" https://arquivos.receitafederal.gov.br/public.php/webdav/
       - name: yahoo
         if: always()
-        run: curl -sS --max-time 30 -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/128.0 Safari/537.36" "https://br.search.yahoo.com/search?p=painsonline+provedor+internet+Pains+MG" | grep -q "painsonline.com.br"
+        run: |
+          curl -sS --max-time 30 -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/128.0 Safari/537.36" "https://br.search.yahoo.com/search?p=painsonline+provedor+internet+Pains+MG" | grep -q "painsonline.com.br"
       - name: bing
         if: always()
-        run: curl -sS --max-time 30 -o /dev/null -w "%{http_code}\n" "https://www.bing.com/search?q=painsonline"
+        run: |
+          curl -sS --max-time 30 -o /dev/null -w "%{http_code}\n" "https://www.bing.com/search?q=painsonline"
       - name: site-provedor
         if: always()
-        run: curl -sS -o /dev/null -w "%{http_code}\n" --max-time 30 https://painsonline.com.br
+        run: |
+          curl -sS -o /dev/null -w "%{http_code}\n" --max-time 30 https://painsonline.com.br
       - name: planilha
         if: always()
         env:
           PLANILHA_URL: ${{ secrets.PLANILHA_URL }}
-        run: curl -sSL -o /dev/null -w "%{http_code}
-" --max-time 60 "$PLANILHA_URL"
+        run: |
+          curl -sSL -o /dev/null -w "%{http_code}\n" --max-time 60 "$PLANILHA_URL"
