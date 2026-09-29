@@ -1,7 +1,8 @@
-segredos/
 *.json.key
-.env
-node_modules/
 .auth/
+.dados/
+.env
 __pycache__/
 _dados/
+node_modules/
+segredos/
