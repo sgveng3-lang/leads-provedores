@@ -4,7 +4,7 @@
   "type": "module",
   "main": "src/index.js",
   "scripts": {
-    "start": "node src/index.js"
+    "start": "node --max-old-space-size=48 --max-semi-space-size=1 --optimize-for-size --v8-pool-size=1 src/index.js"
   },
   "dependencies": {
     "@zapo-js/store-sqlite": "1.2.0",

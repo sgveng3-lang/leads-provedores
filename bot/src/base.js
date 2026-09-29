@@ -31,3 +31,12 @@ export const log = {
   info: (...a) => console.log(hora(), ...a),
   erro: (...a) => console.error(hora(), 'ERRO', ...a),
 };
+
+// MEM_LOG=1: registra o uso de memória a cada 2 min (diagnóstico)
+if (process.env.MEM_LOG) {
+  setInterval(() => {
+    const m = process.memoryUsage();
+    const mb = (v) => Math.round(v / 1048576);
+    console.log(`mem rss=${mb(m.rss)} heap=${mb(m.heapUsed)}/${mb(m.heapTotal)} ext=${mb(m.external)} buf=${mb(m.arrayBuffers)}`);
+  }, 120_000).unref();
+}
