@@ -47,15 +47,29 @@ PREFERENCIA = ("comercial", "vendas", "contato", "atendimento", "sac", "diretori
 RE_NAO_COMERCIAL = re.compile(r"fiscal|contab|contador|societ|juridic|nfe|nf-e|notas?fisc|escrit|dp|rh|tribut|cobranca|boleto", re.I)
 
 
+def _comercial(email):
+    return "@" in email and not RE_NAO_COMERCIAL.search(email.split("@")[0])
+
+
+def destinatarios(lead, max_copias=3):
+    """(para, [cópias]). Para = e-mail da Receita; Cc = e-mails do site.
+    Se o da Receita for de contabilidade/fiscal/jurídico (ou não existir), o 1º
+    e-mail do site vira o "Para". Sem nenhum e-mail comercial: (None, [])."""
+    do_site = [e.strip().lower() for e in (lead.get("emailsSite") or "").split(",") if _comercial(e.strip())]
+    do_site.sort(key=lambda e: next((i for i, p in enumerate(PREFERENCIA) if e.startswith(p)), 99))
+    receita = (lead.get("emailReceita") or "").strip().lower()
+    if _comercial(receita):
+        para = receita
+    elif do_site:
+        para = do_site.pop(0)
+    else:
+        return None, []
+    copias = [e for e in dict.fromkeys(do_site) if e != para][:max_copias]
+    return para, copias
+
+
 def escolher_email(lead):
-    """E-mail comercial do provedor, ou None se só houver endereço de contabilidade/fiscal."""
-    candidatos = [e.strip() for e in (lead.get("emailsSite") or "").split(",") if "@" in e]
-    candidatos.sort(key=lambda e: next((i for i, p in enumerate(PREFERENCIA) if e.startswith(p)), 99))
-    receita = (lead.get("emailReceita") or "").strip()
-    if "@" in receita:
-        candidatos.append(receita)
-    bons = [e for e in candidatos if not RE_NAO_COMERCIAL.search(e.split("@")[0])]
-    return bons[0] if bons else None
+    return destinatarios(lead)[0]
 
 
 def nome_do_provedor(lead):
@@ -116,7 +130,8 @@ def main():
     planilha = Planilha()
     # a planilha devolve os maiores primeiro; filtramos a faixa-alvo e os sem e-mail comercial aqui
     resposta = planilha._post({"acao": "pendentes", "quantidade": 800})
-    ja_usados = {e.lower() for e in resposta.get("enviados", [])}
+    # "Enviado para" guarda "para; cc: a, b" — qualquer endereço ali já recebeu
+    ja_usados = {e.lower() for texto in resposta.get("enviados", []) for e in re.findall(r"[\w.+-]+@[\w.-]+\.\w+", texto)}
     leads, repetidos = [], []
     for lead in resposta["leads"]:
         email = escolher_email(lead)
@@ -125,7 +140,9 @@ def main():
         if email.lower() in ja_usados:  # mesmo endereço de outro CNPJ já recebeu: não repete
             repetidos.append((lead, email))
             continue
-        ja_usados.add(email.lower())
+        _, copias = destinatarios(lead)
+        lead["_copias"] = [c for c in copias if c not in ja_usados]  # cópia repetida sai da lista
+        ja_usados.update([email.lower(), *lead["_copias"]])
         leads.append(lead)
         if len(leads) >= args.limite:
             break
@@ -140,7 +157,7 @@ def main():
     if args.simular:
         for lead in leads:
             assunto, texto, _ = montar(lead, remetente, planilha.url)
-            print("=" * 70, f"\nPara: {escolher_email(lead)}\nAssunto: {assunto}\n\n{texto}")
+            print("=" * 70, f"\nPara: {escolher_email(lead)}\nCc: {', '.join(lead.get('_copias', [])) or '—'}\nAssunto: {assunto}\n\n{texto}")
         return
 
     usar_api = bool(os.environ.get("ZOHO_REFRESH_TOKEN"))
@@ -149,17 +166,24 @@ def main():
     enviados = falhas = 0
     contexto = ssl.create_default_context()
     for i, lead in enumerate(leads):
-        para = args.teste_para or escolher_email(lead)
+        para_real, copias = escolher_email(lead), lead.get("_copias", [])
+        para = args.teste_para or para_real
+        cc = [] if args.teste_para else copias  # teste nunca copia ninguém de verdade
         assunto, texto, html = montar(lead, remetente, planilha.url)
         if args.teste_para:
             assunto = "[TESTE] " + assunto
+            aviso = f"[TESTE] No envio real iria para: {para_real} | Cc: {', '.join(copias) or '—'}"
+            texto = aviso + "\n\n" + texto
+            html = f"<p style='background:#fff3cd;padding:8px'>{aviso}</p>" + html
         try:
             if zoho:
-                zoho.enviar(para, assunto, html, remetente, anexo=args.anexo or None)
+                zoho.enviar(para, assunto, html, remetente, anexo=args.anexo or None, copias=cc)
             else:
                 msg = EmailMessage()
                 msg["From"] = formataddr((remetente, usuario))
                 msg["To"] = para
+                if cc:
+                    msg["Cc"] = ", ".join(cc)
                 msg["Subject"] = assunto
                 msg["Message-ID"] = make_msgid(domain=usuario.split("@")[-1])
                 msg["List-Unsubscribe"] = f"<{planilha.url}?{urlencode({'sair': lead['cnpj'], 't': lead['sair']})}>"
@@ -174,7 +198,8 @@ def main():
                     smtp.login(usuario, os.environ["SMTP_SENHA"])
                     smtp.send_message(msg)
             if not args.teste_para:
-                planilha._post({"acao": "marcar_enviado", "cnpj": lead["cnpj"], "para": para})
+                planilha._post({"acao": "marcar_enviado", "cnpj": lead["cnpj"],
+                                "para": para + (f"; cc: {', '.join(cc)}" if cc else "")})
             enviados += 1
         except smtplib.SMTPRecipientsRefused:
             planilha._post({"acao": "marcar_enviado", "cnpj": lead["cnpj"], "para": f"RECUSADO {para}"})

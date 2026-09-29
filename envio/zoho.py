@@ -74,11 +74,13 @@ class ZohoMail:
             return {k: d[k] for k in ("storeName", "attachmentPath", "attachmentName")}
         raise EnvioRecusado("token recusado duas vezes (anexo)")
 
-    def enviar(self, para, assunto, html, nome_remetente="", anexo=None):
+    def enviar(self, para, assunto, html, nome_remetente="", anexo=None, copias=()):
         corpo = {
             "fromAddress": f'"{nome_remetente}" <{self.remetente}>' if nome_remetente else self.remetente,
             "toAddress": para, "subject": assunto, "content": html, "mailFormat": "html",
         }
+        if copias:
+            corpo["ccAddress"] = ",".join(copias)
         if anexo:
             corpo["attachments"] = [self.anexar(anexo)]  # upload por e-mail: a referência vale pra uma mensagem
         for tentativa in range(2):
