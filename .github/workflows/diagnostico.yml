@@ -1,5 +1,5 @@
 name: diagnostico
-# Testa, a partir da máquina do GitHub, quais servidores respondem.
+# Testa, a partir da máquina do GitHub, quais fontes respondem.
 on:
   push:
     paths: [".github/workflows/diagnostico.yml"]
@@ -13,30 +13,23 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: anatel-ua-python
+      - name: opencnpj
         run: |
-          curl -sS -o /dev/null -w "%{http_code}\n" --max-time 60 -I -A "python-requests/2.32.3" https://www.anatel.gov.br/dadosabertos/paineis_de_dados/acessos/acessos_banda_larga_fixa.zip
-      - name: anatel-ua-navegador
+          curl -sS --max-time 30 -A "$NAVEGADOR" https://api.opencnpj.org/04573288000144 | grep -qi "painsonline"
+      - name: opencnpj-rajada
         if: always()
         run: |
-          curl -sS -o /dev/null -w "%{http_code}\n" --max-time 60 -I -A "$NAVEGADOR" https://www.anatel.gov.br/dadosabertos/paineis_de_dados/acessos/acessos_banda_larga_fixa.zip
-      - name: receita-ua-navegador
+          for i in $(seq 1 15); do curl -sS -o /dev/null -w "%{http_code}\n" --max-time 20 -A "$NAVEGADOR" https://api.opencnpj.org/04573288000144; done | sort | uniq -c
+          test "$(for i in $(seq 1 5); do curl -s -o /dev/null -w "%{http_code}\n" --max-time 20 -A "$NAVEGADOR" https://api.opencnpj.org/04573288000144; done | grep -c 200)" -ge 4
+      - name: cnpja
         if: always()
         run: |
-          curl -sS -o /dev/null -w "%{http_code}\n" --max-time 60 -A "$NAVEGADOR" -X PROPFIND -u "YggdBLfdninEJX9:" -H "Depth: 1" https://arquivos.receitafederal.gov.br/public.php/webdav/
-      - name: api-cnpjws
+          curl -sS --max-time 30 -A "$NAVEGADOR" https://open.cnpja.com/office/04573288000144 | grep -qi "painsonline"
+      - name: cnpjws
         if: always()
         run: |
-          curl -sS --max-time 30 -A "$NAVEGADOR" https://publica.cnpj.ws/cnpj/04573288000144 | grep -q "painsonline"
-      - name: api-receitaws
+          curl -sS --max-time 30 -A "$NAVEGADOR" https://publica.cnpj.ws/cnpj/04573288000144 | grep -qi "painsonline"
+      - name: receitaws
         if: always()
         run: |
           curl -sS --max-time 30 -A "$NAVEGADOR" https://receitaws.com.br/v1/cnpj/04573288000144 | grep -qi "painsonline"
-      - name: yahoo-pt
-        if: always()
-        run: |
-          curl -sS --max-time 30 -A "$NAVEGADOR" -H "Accept-Language: pt-BR,pt;q=0.9" "https://br.search.yahoo.com/search?p=painsonline+provedor+internet+Pains+MG&vl=lang_pt&fr=yfp-t" | grep -q "painsonline.com.br"
-      - name: bing-resultado
-        if: always()
-        run: |
-          curl -sS --max-time 30 -A "$NAVEGADOR" -H "Accept-Language: pt-BR" "https://www.bing.com/search?q=painsonline+provedor+internet+Pains+MG&cc=BR&setlang=pt-br" | grep -q "painsonline.com.br"

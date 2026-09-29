@@ -154,6 +154,8 @@ def cmd_raspar(args):
                 _gravar_json_gz(CACHE_CNPJ, cache)
         prov["receita"] = {k: dados.get(k, "") for k in ("fantasia", "situacao", "email", "telefones")}
     _gravar_json_gz(CACHE_CNPJ, cache)
+    if consultados:
+        print("apis de cnpj: " + ", ".join(f"{k}={v}" for k, v in sorted(consulta.uso.items())))
     lote = [p for p in lote if (p.get("receita") or {}).get("situacao", "Ativa") in ("Ativa", "")]
 
     raspador = Raspador()
