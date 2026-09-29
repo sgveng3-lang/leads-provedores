@@ -3,6 +3,7 @@ run-name: "enviar e-mails · ${{ github.event_name }}"
 
 # Prospecção em ritmo lento: dias úteis às 09:00 (Brasília) = 12:00 UTC.
 # Limite por dia na variável do repositório ENVIO_LIMITE (padrão 15).
+# Liga/desliga o envio AUTOMÁTICO: variável ENVIO_LIGADO = sim (o bot do WhatsApp controla).
 on:
   schedule:
     - cron: "0 12 * * 1-5"
@@ -24,8 +25,8 @@ concurrency:
 
 jobs:
   enviar:
-    # só roda depois que a caixa de envio (API do Zoho ou SMTP) estiver configurada
-    if: vars.ENVIO_ATIVO == 'sim'
+    # agendado só com ENVIO_LIGADO=sim; disparo manual (bot/GitHub) sempre roda
+    if: github.event_name == 'workflow_dispatch' || vars.ENVIO_LIGADO == 'sim'
     runs-on: ubuntu-latest
     timeout-minutes: 350
     steps:
@@ -52,3 +53,12 @@ jobs:
         run: >
           python envio/enviar.py --limite "${{ inputs.limite || vars.ENVIO_LIMITE || '15' }}"
           --teste-para "${{ inputs.teste_para }}"
+
+      # só contagens (repo público) — o bot lê este resumo e avisa no grupo
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: resumo-envio
+          path: _dados/resumo-envio.json
+          if-no-files-found: ignore
+          retention-days: 3

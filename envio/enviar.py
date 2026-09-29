@@ -19,6 +19,7 @@ Repositório público: o log só mostra contagens, nunca e-mail/nome de provedor
 """
 
 import argparse
+import json
 import os
 import random
 import re
@@ -189,6 +190,10 @@ def main():
 
     resumo = f"envio: {enviados} enviados, {falhas} falhas, {len(leads)} pendentes selecionados"
     print(resumo)
+    saida = Path(__file__).resolve().parent.parent / "_dados" / "resumo-envio.json"
+    saida.parent.mkdir(exist_ok=True)
+    saida.write_text(json.dumps({"enviados": enviados, "falhas": falhas, "selecionados": len(leads),
+                                 "repetidos": len(repetidos), "teste": bool(args.teste_para)}), encoding="utf-8")
     if os.environ.get("GITHUB_STEP_SUMMARY"):
         Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8").write(f"### {resumo}\n")
 
