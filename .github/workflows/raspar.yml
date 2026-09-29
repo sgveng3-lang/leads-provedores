@@ -1,8 +1,11 @@
 name: raspar
-run-name: "raspar ${{ inputs.ufs }} · ${{ inputs.pedido }}"
+run-name: "raspar ${{ inputs.ufs || 'TODAS' }} · ${{ inputs.pedido || 'semanal' }}"
 
 # Raspa TODAS as UFs de uma vez: um job por UF (até 6 em paralelo).
+# Automático toda segunda às 06:00 (Brasília) = 09:00 UTC; também pode ser disparado à mão.
 on:
+  schedule:
+    - cron: "0 9 * * 1"
   workflow_dispatch:
     inputs:
       ufs:
@@ -62,7 +65,7 @@ jobs:
           path: _dados/base.json.gz
           key: base-${{ steps.chave.outputs.chave }}
       - id: ufs
-        run: python scraper/main.py ufs --so "${{ inputs.ufs }}" >> "$GITHUB_OUTPUT"
+        run: python scraper/main.py ufs --so "${{ inputs.ufs || 'TODAS' }}" >> "$GITHUB_OUTPUT"
 
   raspar:
     needs: base
@@ -97,9 +100,9 @@ jobs:
           PLANILHA_TOKEN: ${{ secrets.PLANILHA_TOKEN }}
         run: >
           python scraper/main.py raspar --uf "${{ matrix.uf }}"
-          --limite "${{ inputs.limite_por_uf }}"
-          --min-acessos "${{ inputs.min_acessos }}" --max-acessos "${{ inputs.max_acessos }}"
-          --pedido "${{ inputs.pedido }}" --sem-registro
+          --limite "${{ inputs.limite_por_uf || '0' }}"
+          --min-acessos "${{ inputs.min_acessos || '200' }}" --max-acessos "${{ inputs.max_acessos || '0' }}"
+          --pedido "${{ inputs.pedido || 'semanal' }}" --sem-registro
           --saida "_dados/resumo-${{ matrix.uf }}.json"
       - if: always()
         uses: actions/cache/save@v4
@@ -138,7 +141,7 @@ jobs:
           PLANILHA_TOKEN: ${{ secrets.PLANILHA_TOKEN }}
         run: >
           python scraper/main.py consolidar --pasta _dados/resumos
-          --pedido "${{ inputs.pedido }}" --inicio "${{ needs.base.outputs.inicio }}"
+          --pedido "${{ inputs.pedido || 'semanal' }}" --inicio "${{ needs.base.outputs.inicio }}"
       # só contagens — o bot lê este resumo
       - if: always()
         uses: actions/upload-artifact@v4
