@@ -23,12 +23,41 @@ const COLUNAS = [
   'E-mail (Receita)', 'Telefone (Receita)', 'Situação (Receita)',
   'Site', 'E-mails do site', 'WhatsApp', 'Telefones do site',
   'Status', 'Observações', 'Primeira captura', 'Atualizado em',
+  'Enviado em', 'Enviado para',
 ];
-const COLUNAS_DO_USUARIO = ['Status', 'Observações'];
+// colunas que o scraper nunca sobrescreve (suas + as do envio de e-mail)
+const COLUNAS_DO_USUARIO = ['Status', 'Observações', 'Enviado em', 'Enviado para'];
 const COLUNAS_EXECUCOES = ['Data', 'Pedido', 'Filtros', 'Provedores', 'Novos', 'Atualizados', 'Com e-mail', 'Com WhatsApp', 'Duração (min)'];
 
-function doGet() {
+function doGet(e) {
+  const p = (e && e.parameter) || {};
+  if (p.sair) return descadastrar_(String(p.sair), String(p.t || ''));
   return json_({ ok: true, servico: 'leads-provedores' });
+}
+
+// assinatura do link de descadastro: HMAC-SHA256(cnpj, TOKEN), 16 primeiros caracteres
+function assinatura_(cnpj) {
+  const token = PropertiesService.getScriptProperties().getProperty('TOKEN');
+  const bytes = Utilities.computeHmacSha256Signature(cnpj, token);
+  return Utilities.base64EncodeWebSafe(bytes).slice(0, 16);
+}
+
+function descadastrar_(cnpj, t) {
+  const html = (msg) => HtmlService.createHtmlOutput(
+    '<div style="font-family:sans-serif;max-width:520px;margin:60px auto;text-align:center"><h2>' + msg + '</h2></div>');
+  if (t !== assinatura_(cnpj)) return html('Link inválido.');
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    const aba = aba_(ABA_PROVEDORES, COLUNAS);
+    const n = aba.getLastRow() - 1;
+    const cnpjs = n > 0 ? aba.getRange(2, 1, n, 1).getDisplayValues() : [];
+    const i = cnpjs.findIndex((l) => l[0] === cnpj);
+    if (i >= 0) aba.getRange(i + 2, COLUNAS.indexOf('Status') + 1).setValue('Descadastrado');
+  } finally {
+    lock.releaseLock();
+  }
+  return html('Pronto! Você não vai receber mais e-mails nossos.');
 }
 
 function doPost(e) {
@@ -42,6 +71,8 @@ function doPost(e) {
     if (corpo.acao === 'upsert') return json_(upsert_(corpo.linhas || []));
     if (corpo.acao === 'execucao') return json_(registrarExecucao_(corpo.execucao || {}));
     if (corpo.acao === 'cnpjs') return json_({ ok: true, cnpjs: cnpjsExistentes_() });
+    if (corpo.acao === 'pendentes') return json_(pendentes_(corpo.quantidade || 20));
+    if (corpo.acao === 'marcar_enviado') return json_(marcarEnviado_(corpo.cnpj, corpo.para));
     return json_({ ok: false, erro: 'ação desconhecida' });
   } catch (erro) {
     return json_({ ok: false, erro: String(erro) });
@@ -70,6 +101,7 @@ function cnpjsExistentes_() {
 
 function upsert_(linhas) {
   const aba = aba_(ABA_PROVEDORES, COLUNAS);
+  aba.getRange(1, 1, 1, COLUNAS.length).setValues([COLUNAS]).setFontWeight('bold');
   const agora = Utilities.formatDate(new Date(), 'America/Sao_Paulo', 'yyyy-MM-dd HH:mm');
   const total = aba.getLastRow() - 1;
   const atuais = total > 0 ? aba.getRange(2, 1, total, COLUNAS.length).getValues() : [];
@@ -103,6 +135,42 @@ function upsert_(linhas) {
     intervalo.setValues(atuais);
   }
   return { ok: true, novos: novos, atualizados: atualizados, total: atuais.length };
+}
+
+// Próximos leads pra receber e-mail: Status "Novo" (ou vazio), sem envio anterior,
+// com algum e-mail. Maiores provedores primeiro.
+function pendentes_(quantidade) {
+  const aba = aba_(ABA_PROVEDORES, COLUNAS);
+  const n = aba.getLastRow() - 1;
+  if (n < 1) return { ok: true, leads: [] };
+  const col = {};
+  COLUNAS.forEach((c, i) => { col[c] = i; });
+  const leads = aba.getRange(2, 1, n, COLUNAS.length).getDisplayValues()
+    .filter((l) => ['', 'Novo'].includes(l[col['Status']]) && !l[col['Enviado em']]
+      && (l[col['E-mails do site']] || l[col['E-mail (Receita)']]))
+    .map((l) => ({
+      cnpj: l[col['CNPJ']], empresa: l[col['Empresa (Anatel)']], fantasia: l[col['Nome fantasia']],
+      uf: l[col['UF principal']], municipios: l[col['Municípios']], acessos: Number(String(l[col['Acessos']]).replace(/\D/g, '')) || 0,
+      emailReceita: l[col['E-mail (Receita)']], emailsSite: l[col['E-mails do site']],
+      sair: assinatura_(l[col['CNPJ']]),
+    }))
+    .sort((a, b) => b.acessos - a.acessos)
+    .slice(0, quantidade);
+  return { ok: true, leads: leads };
+}
+
+function marcarEnviado_(cnpj, para) {
+  const aba = aba_(ABA_PROVEDORES, COLUNAS);
+  const n = aba.getLastRow() - 1;
+  const cnpjs = n > 0 ? aba.getRange(2, 1, n, 1).getDisplayValues() : [];
+  const i = cnpjs.findIndex((l) => l[0] === cnpj);
+  if (i < 0) return { ok: false, erro: 'cnpj não encontrado' };
+  const linha = i + 2;
+  const agora = Utilities.formatDate(new Date(), 'America/Sao_Paulo', 'yyyy-MM-dd HH:mm');
+  aba.getRange(linha, COLUNAS.indexOf('Status') + 1).setValue('Enviado');
+  aba.getRange(linha, COLUNAS.indexOf('Enviado em') + 1).setValue(agora);
+  aba.getRange(linha, COLUNAS.indexOf('Enviado para') + 1).setValue(para || '');
+  return { ok: true };
 }
 
 function registrarExecucao_(ex) {

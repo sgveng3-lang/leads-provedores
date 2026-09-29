@@ -1,0 +1,45 @@
+name: enviar
+run-name: "enviar e-mails · ${{ github.event_name }}"
+
+# Prospecção em ritmo lento: dias úteis às 09:00 (Brasília) = 12:00 UTC.
+# Limite por dia na variável do repositório ENVIO_LIMITE (padrão 15).
+on:
+  schedule:
+    - cron: "0 12 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      limite:
+        description: "Quantos e-mails nesta execução"
+        default: "15"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: enviar
+  cancel-in-progress: false
+
+jobs:
+  enviar:
+    # só roda depois que o SMTP estiver configurado
+    if: vars.ENVIO_ATIVO == 'sim'
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: scraper/requirements.txt
+      - run: pip install -r scraper/requirements.txt
+      - name: Enviar
+        env:
+          PLANILHA_URL: ${{ secrets.PLANILHA_URL }}
+          PLANILHA_TOKEN: ${{ secrets.PLANILHA_TOKEN }}
+          SMTP_HOST: ${{ vars.SMTP_HOST || 'smtp.zoho.com' }}
+          SMTP_PORT: ${{ vars.SMTP_PORT || '465' }}
+          SMTP_USUARIO: ${{ secrets.SMTP_USUARIO }}
+          SMTP_SENHA: ${{ secrets.SMTP_SENHA }}
+          REMETENTE_NOME: ${{ vars.REMETENTE_NOME || 'Equipe SepiaStream' }}
+        run: python envio/enviar.py --limite "${{ inputs.limite || vars.ENVIO_LIMITE || '15' }}"
