@@ -30,8 +30,10 @@ class Planilha:
         novos = atualizados = 0
         for i in range(0, len(linhas), lote):
             r = self._post({"acao": "upsert", "linhas": linhas[i:i + lote]})
-            novos += r["novos"]
-            atualizados += r["atualizados"]
+            # a resposta às vezes volta sem as contagens (redirecionamento do
+            # Google); a gravação em si já aconteceu, então não derruba a execução
+            novos += r.get("novos", 0)
+            atualizados += r.get("atualizados", 0)
         return novos, atualizados
 
     def registrar_execucao(self, execucao):

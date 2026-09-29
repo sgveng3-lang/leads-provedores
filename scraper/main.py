@@ -177,7 +177,10 @@ def cmd_raspar(args):
         if _cnpj_formatado(prov["cnpj"]) not in com_email_cnpjs:
             cache.setdefault(prov["cnpj"], {})["sem_email_em"] = agora
     _gravar_json_gz(CACHE_CNPJ, cache)
-    novos, atualizados = planilha.upsert(linhas)
+    planilha.upsert(linhas)
+    # contagem local (não depende da resposta da planilha)
+    novos = sum(1 for l in linhas if l["CNPJ"] not in ja_na_planilha)
+    atualizados = len(linhas) - novos
     com_email = len(linhas)
     com_whats = sum(1 for l in linhas if l["WhatsApp"])
     com_site = sum(1 for l in linhas if l["Site"])
