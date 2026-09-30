@@ -389,6 +389,8 @@ async function acompanharPosts() {
       if (p.pausou) l += `\n   ⏸️ *${NOME_REDE[p.rede]} PAUSADO* (pediu login/captcha). Exporte cookies novos, atualize o secret TIKTOK_COOKIES e mande *posts ${p.rede} retomar*.`;
       linhas.push(l);
     }
+    if (r.pulados && r.pulados.length) linhas.push(`⏭️ Pulado(s) por ter menos de 15 s: ${r.pulados.join(', ')}`);
+    if (!linhas.length) continue;
     const pend = r.pendentes || {};
     let texto = `🎬 ${linhas.join('\n')}\n\nPendentes — TikTok: ${pend.tiktok ?? '?'} · Instagram: ${pend.instagram ?? '?'}`;
     if (REDES_POST.some((x) => pend[x] !== undefined && pend[x] <= 2)) texto += '\n📢 Fila acabando — coloque mais vídeos na pasta Fila do Drive.';
