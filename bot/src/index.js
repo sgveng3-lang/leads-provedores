@@ -33,16 +33,17 @@ const AJUDA =
   '*envio limite 20* — e-mails por dia (máx. 40)\n' +
   '*envio agora 5* — envia já N e-mails reais (máx. 15)\n' +
   '*envio teste fulano@email.com* — 2 e-mails de teste só pra esse endereço\n\n' +
-  '🎬 *Posts de vídeo (TikTok + Instagram)*\n' +
-  '*posts* — situação, fila no Drive e configuração\n' +
-  '*posts ligar* / *posts desligar* — postagem automática\n' +
-  '*posts agora* — posta o próximo vídeo já (ou *posts agora tiktok* / *instagram*)\n' +
-  '*posts por dia 3* — posts por dia (1 a 6)\n' +
-  '*posts horario 10-22* — janela de horário\n' +
-  '*posts redes tiktok,instagram* — em quais redes postar\n' +
+  '🎬 *Posts de vídeo* (TikTok e Instagram independentes)\n' +
+  '*posts* — situação de cada rede e da fila no Drive\n' +
+  '*posts tiktok ligar* / *desligar* — só o TikTok\n' +
+  '*posts instagram ligar* / *desligar* — só o Instagram\n' +
+  '*posts ligar* / *posts desligar* — as duas\n' +
+  '*posts tiktok agora* / *posts instagram agora* / *posts agora* — posta já\n' +
+  '*posts tiktok por dia 3* / *posts instagram por dia 2* — posts por dia (1 a 6)\n' +
   '*posts instagram normal|teste|ambos* — tipo de Reel\n' +
+  '*posts horario 10-22* — janela de horário (as duas)\n' +
   '*posts ordem intercalada|numerica|alfabetica*\n' +
-  '*posts retomar tiktok* — tira a pausa (depois de renovar os cookies)\n\n' +
+  '*posts tiktok retomar* — tira a pausa (depois de renovar os cookies)\n\n' +
   '*ajuda* — esta mensagem\n' +
   'Raspagem automática: toda segunda às 06:00.';
 
@@ -233,88 +234,115 @@ async function acompanharEnvio() {
 }
 
 // ---------------- posts de vídeo ----------------
+// TikTok e Instagram são independentes: cada um liga/desliga, tem seus posts por
+// dia e anda pela fila do Drive no seu ritmo (o vídeo sai da Fila quando foi pras duas).
 const PR = () => gh.POSTS_REPO();
-const VARS_POSTS = {
-  POSTS_LIGADO: 'nao', POSTS_REDES: 'tiktok,instagram', POSTS_POR_DIA: '2', POSTS_JANELA: '10-22',
-  POSTS_ORDEM: 'intercalada', IG_MODO: 'normal',
-};
+const REDES_POST = ['tiktok', 'instagram'];
+const NOME_REDE = { tiktok: 'TikTok', instagram: 'Instagram' };
 const NOME_IG = { normal: 'Reel normal', teste: 'Reel de teste', ambos: 'teste + normal' };
+const PADRAO_POSTS = {
+  TIKTOK_LIGADO: 'nao', INSTAGRAM_LIGADO: 'nao', TIKTOK_POR_DIA: '2', INSTAGRAM_POR_DIA: '2',
+  POSTS_JANELA: '10-22', POSTS_ORDEM: 'intercalada', IG_MODO: 'normal',
+};
 const horaBR = (iso) => new Date(iso).toLocaleTimeString('pt-BR', { timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit' });
+const semAcento = (t) => (t || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+
+async function lerConfigPosts() {
+  const v = {};
+  await Promise.all(Object.keys(PADRAO_POSTS).map(async (k) => { v[k] = (await gh.lerVariavel(k, PR())) || PADRAO_POSTS[k]; }));
+  return v;
+}
+
+async function statusPosts() {
+  const [v, f] = await Promise.all([lerConfigPosts(), gh.filaStatus().catch(() => null)]);
+  let texto = '🎬 *Posts de vídeo*';
+  for (const rede of REDES_POST) {
+    const R = rede.toUpperCase();
+    const ligado = v[`${R}_LIGADO`] === 'sim';
+    const pausa = f && f.ok && f.pausas && f.pausas[rede];
+    texto += `\n\n*${NOME_REDE[rede]}*: ${pausa ? '⏸️ PAUSADO' : ligado ? '🟢 LIGADO' : '🔴 DESLIGADO'} · ${v[`${R}_POR_DIA`]} por dia`;
+    if (rede === 'instagram') texto += ` · ${NOME_IG[v.IG_MODO] || v.IG_MODO}`;
+    if (f && f.ok && f.redes && f.redes[rede]) {
+      const r = f.redes[rede];
+      texto += `\nPendentes: *${r.pendentes}* · postados hoje: ${r.hoje}`;
+      if (r.proximos.length) texto += `\nPróximo: ${r.proximos[0]}`;
+    }
+    if (pausa) texto += `\n(${pausa.motivo}) — renove e mande *posts ${rede} retomar*`;
+  }
+  texto += `\n\n🕐 Entre ${v.POSTS_JANELA.replace('-', 'h e ')}h (horário sorteado) · ordem ${v.POSTS_ORDEM}`;
+  texto += f && f.ok ? `\n📂 Fila no Drive: ${f.fila} vídeo(s)` : '\n📂 Fila: não consegui consultar o Drive (variável FILA_STATUS_URL configurada?)';
+  return avisar(texto);
+}
+
+async function postarAgora(rede) {
+  await gh.dispararPost(rede);
+  estado.postsAvisar = true;
+  salvarEstado(estado);
+  agendar(COM_EXECUCAO_MS);
+  return avisar(`🚀 Postando o próximo vídeo ${rede ? `no ${NOME_REDE[rede]}` : 'nas redes ligadas (ou nas duas, se nenhuma estiver ligada)'}. Aviso quando terminar (~5 min).`);
+}
+
+// posts tiktok ... / posts instagram ...
+async function comandoRede(rede, args) {
+  const R = rede.toUpperCase();
+  const sub = semAcento(args[0]);
+  const gravar = (nome, valor) => gh.gravarVariavel(nome, valor, PR());
+  if (!sub) return statusPosts();
+  if (sub === 'ligar' || sub === 'desligar') {
+    await gravar(`${R}_LIGADO`, sub === 'ligar' ? 'sim' : 'nao');
+    return avisar(sub === 'ligar'
+      ? `🟢 ${NOME_REDE[rede]} LIGADO: posta sozinho no horário sorteado. *posts ${rede} desligar* pra parar.`
+      : `🔴 ${NOME_REDE[rede]} DESLIGADO. Os vídeos ficam esperando na fila; ao religar, ele alcança o que a outra rede já postou.`);
+  }
+  if (sub === 'agora') return postarAgora(rede);
+  if (sub === 'por' || sub === 'limite') {
+    const n = Number(sub === 'por' ? args[2] : args[1]);
+    if (!Number.isInteger(n) || n < 1 || n > 6) return avisar(`Use de 1 a 6. Ex.: *posts ${rede} por dia 3*`);
+    await gravar(`${R}_POR_DIA`, n);
+    return avisar(`✅ ${NOME_REDE[rede]}: ${n} post(s) por dia.`);
+  }
+  if (sub === 'retomar') {
+    await gh.dispararRetomar(rede);
+    return avisar(`▶️ Retomando ${NOME_REDE[rede]}. Volta a postar na próxima execução.`);
+  }
+  if (rede === 'instagram' && NOME_IG[sub]) {
+    await gravar('IG_MODO', sub);
+    return avisar(`✅ Instagram: ${NOME_IG[sub]}.`);
+  }
+  return avisar(`Opções: *posts ${rede} ligar*, *desligar*, *agora*, *por dia N*, *retomar*` +
+    (rede === 'instagram' ? ', *normal*, *teste*, *ambos*' : ''));
+}
 
 async function comandoPosts(args) {
-  const sub = (args[0] || 'status').toLowerCase();
+  const sub = semAcento(args[0] || 'status');
   const gravar = (nome, valor) => gh.gravarVariavel(nome, valor, PR());
 
-  if (sub === 'status' || sub === 'situacao' || sub === 'situação') {
-    const v = {};
-    await Promise.all(Object.keys(VARS_POSTS).map(async (k) => { v[k] = (await gh.lerVariavel(k, PR())) || VARS_POSTS[k]; }));
-    let texto = `🎬 *Posts de vídeo*\nAutomático: ${v.POSTS_LIGADO === 'sim' ? '🟢 LIGADO' : '🔴 DESLIGADO'}\n` +
-      `${v.POSTS_POR_DIA} por dia, entre ${v.POSTS_JANELA.replace('-', 'h e ')}h (horário sorteado)\n` +
-      `Redes: ${v.POSTS_REDES} · Instagram: ${NOME_IG[v.IG_MODO] || v.IG_MODO} · Ordem: ${v.POSTS_ORDEM}`;
-    const f = await gh.filaStatus().catch(() => null);
-    if (f && f.ok) {
-      texto += `\n\n📂 Fila no Drive: *${f.fila}* vídeo(s) · postados hoje: ${f.hoje}`;
-      if (f.proximos.length) texto += `\nPróximos: ${f.proximos.join(', ')}`;
-      if (f.pela_metade.length) texto += `\n⚠️ Pela metade: ${f.pela_metade.join(', ')}`;
-      for (const [rede, p] of Object.entries(f.pausas || {})) texto += `\n⏸️ *${rede} PAUSADO* (${p.motivo}) — renove e mande *posts retomar ${rede}*`;
-    } else {
-      texto += '\n\n📂 Fila: não consegui consultar o Drive (variável FILA_STATUS_URL configurada?)';
-    }
-    return avisar(texto);
-  }
+  if (sub === 'tiktok' || sub === 'instagram' || sub === 'ig') return comandoRede(sub === 'ig' ? 'instagram' : sub, args.slice(1));
+  if (sub === 'status' || sub === 'situacao') return statusPosts();
   if (sub === 'ligar' || sub === 'desligar') {
-    await gravar('POSTS_LIGADO', sub === 'ligar' ? 'sim' : 'nao');
-    return avisar(sub === 'ligar'
-      ? '🟢 Postagem automática LIGADA. Mande *posts desligar* pra pausar.'
-      : '🔴 Postagem automática DESLIGADA. Nada sai sozinho até *posts ligar*.');
+    await Promise.all(REDES_POST.map((r) => gravar(`${r.toUpperCase()}_LIGADO`, sub === 'ligar' ? 'sim' : 'nao')));
+    return avisar(sub === 'ligar' ? '🟢 TikTok e Instagram LIGADOS.' : '🔴 TikTok e Instagram DESLIGADOS. Nada sai sozinho.');
   }
   if (sub === 'agora') {
-    const rede = (args[1] || '').toLowerCase();
-    if (rede && !['tiktok', 'instagram'].includes(rede)) return avisar('Ex.: *posts agora*, *posts agora tiktok*, *posts agora instagram*');
-    await gh.dispararPost(rede);
-    estado.postsAvisar = true;
-    salvarEstado(estado);
-    agendar(COM_EXECUCAO_MS);
-    return avisar(`🚀 Postando o próximo vídeo da fila${rede ? ` só no ${rede}` : ''}. Aviso quando terminar (~5 min).`);
+    const rede = semAcento(args[1]);
+    if (rede && !REDES_POST.includes(rede)) return avisar('Ex.: *posts agora*, *posts tiktok agora*, *posts instagram agora*');
+    return postarAgora(rede);
   }
-  if (sub === 'por' || sub === 'pordia' || sub === 'limite') {
-    const n = Number(sub === 'por' ? args[2] : args[1]);
-    if (!Number.isInteger(n) || n < 1 || n > 6) return avisar('Use de 1 a 6. Ex.: *posts por dia 3*');
-    await gravar('POSTS_POR_DIA', n);
-    return avisar(`✅ ${n} post(s) por dia.`);
-  }
-  if (sub === 'horario' || sub === 'horário') {
+  if (sub === 'retomar') return comandoRede(semAcento(args[1]) || 'tiktok', ['retomar']);
+  if (sub === 'horario') {
     const m = (args[1] || '').match(/^(\d{1,2})-(\d{1,2})$/);
     if (!m || +m[1] >= +m[2] || +m[1] < 10 || +m[2] > 22) return avisar('Ex.: *posts horario 10-22* (o agendamento roda entre 10h e 22h)');
     await gravar('POSTS_JANELA', `${+m[1]}-${+m[2]}`);
-    return avisar(`✅ Posts entre ${+m[1]}h e ${+m[2]}h.`);
-  }
-  if (sub === 'redes') {
-    const redes = (args[1] || '').toLowerCase().split(',').filter(Boolean);
-    if (!redes.length || redes.some((r) => !['tiktok', 'instagram'].includes(r))) return avisar('Ex.: *posts redes tiktok,instagram* ou *posts redes instagram*');
-    await gravar('POSTS_REDES', redes.join(','));
-    return avisar(`✅ Postando em: ${redes.join(' + ')}.`);
-  }
-  if (sub === 'instagram' || sub === 'ig') {
-    const modo = (args[1] || '').toLowerCase();
-    if (!NOME_IG[modo]) return avisar('Ex.: *posts instagram normal*, *posts instagram teste* ou *posts instagram ambos*');
-    await gravar('IG_MODO', modo);
-    return avisar(`✅ Instagram: ${NOME_IG[modo]}.`);
+    return avisar(`✅ Posts entre ${+m[1]}h e ${+m[2]}h (vale pras duas redes).`);
   }
   if (sub === 'ordem') {
-    const ordem = (args[1] || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+    const ordem = semAcento(args[1]);
     if (!['intercalada', 'numerica', 'alfabetica'].includes(ordem)) return avisar('Ex.: *posts ordem intercalada*, *numerica* ou *alfabetica*');
     await gravar('POSTS_ORDEM', ordem);
     return avisar(`✅ Ordem: ${ordem}.`);
   }
-  if (sub === 'retomar') {
-    const rede = (args[1] || 'tiktok').toLowerCase();
-    if (!['tiktok', 'instagram'].includes(rede)) return avisar('Ex.: *posts retomar tiktok*');
-    await gh.dispararRetomar(rede);
-    return avisar(`▶️ Retomando ${rede}. Ele volta a postar na próxima execução.`);
-  }
-  return avisar('Opções: *posts*, *posts ligar/desligar*, *posts agora*, *posts por dia N*, *posts horario 10-22*, ' +
-    '*posts redes ...*, *posts instagram normal|teste|ambos*, *posts ordem ...*, *posts retomar tiktok*');
+  return avisar('Opções: *posts*, *posts tiktok ligar/desligar*, *posts instagram ligar/desligar*, *posts ligar/desligar* (as duas), ' +
+    '*posts agora*, *posts tiktok por dia N*, *posts instagram normal|teste|ambos*, *posts horario 10-22*, *posts ordem ...*, *posts tiktok retomar*');
 }
 
 // avisa no grupo cada execução que postou (ou falhou); as que só "não sortearam" ficam quietas
@@ -335,13 +363,18 @@ async function acompanharPosts() {
       continue;
     }
     if (r.erro) { await avisar(`⚠️ Postagem das ${horaBR(run.created_at)} falhou: ${r.erro}`); continue; }
-    const linhas = Object.entries(r.redes || {}).map(([rede, st]) => `${st === 'ok' ? '✅' : '❌'} ${rede}${st === 'ok' ? '' : `: ${st}`}`);
-    let texto = `🎬 *${r.video}*\n${linhas.join('\n') || 'nada a postar'}`;
-    const links = (r.links || []).filter(Boolean);
-    if (links.length) texto += `\n${links.join('\n')}`;
-    texto += r.concluido ? `\n📂 Restam ${r.fila - 1} na fila.` : '\n↩️ Continua na fila; a próxima tentativa faz só a rede que faltou.';
-    if (r.pausou) texto += `\n\n⏸️ *${r.pausou} PAUSADO* (pediu login/captcha). Exporte cookies novos, atualize o secret TIKTOK_COOKIES e mande *posts retomar ${r.pausou}*.`;
-    if (r.concluido && r.fila - 1 <= 2) texto += '\n\n📢 Fila quase vazia — coloque mais vídeos na pasta Fila do Drive.';
+    const linhas = [];
+    for (const p of r.posts || []) {
+      let l = `${p.ok ? '✅' : '❌'} *${NOME_REDE[p.rede] || p.rede}*: ${p.video}`;
+      if (!p.ok) l += `\n   ${p.erro}`;
+      for (const link of p.links || []) l += `\n   ${link}`;
+      if (p.concluido) l += '\n   📂 saiu nas duas redes → Postados';
+      if (p.pausou) l += `\n   ⏸️ *${NOME_REDE[p.rede]} PAUSADO* (pediu login/captcha). Exporte cookies novos, atualize o secret TIKTOK_COOKIES e mande *posts ${p.rede} retomar*.`;
+      linhas.push(l);
+    }
+    const pend = r.pendentes || {};
+    let texto = `🎬 ${linhas.join('\n')}\n\nPendentes — TikTok: ${pend.tiktok ?? '?'} · Instagram: ${pend.instagram ?? '?'}`;
+    if (REDES_POST.some((x) => pend[x] !== undefined && pend[x] <= 2)) texto += '\n📢 Fila acabando — coloque mais vídeos na pasta Fila do Drive.';
     await avisar(texto);
   }
 }
