@@ -2,8 +2,10 @@
 // dispara o workflow no GitHub e avisa o resultado. Todo o trabalho pesado
 // roda no GitHub Actions — aqui não se processa dado nenhum.
 //
+// Também controla os posts de vídeo (TikTok/Instagram) do repo sepiastream-posts.
+//
 // Timers: com raspagem em andamento, consulta o GitHub a cada 3 min; sem
-// raspagem, a cada 30 min (pra notar a execução semanal automática).
+// raspagem, a cada 15 min (pra notar a raspagem semanal e os posts agendados).
 import { carregarEnv, lerEstado, log, salvarEstado } from './base.js';
 import * as gh from './github.js';
 import { acharGrupo, conectar, enviar, idsEnviadosPeloBot, textoDa } from './whatsapp.js';
@@ -14,7 +16,7 @@ for (const v of ['WHATSAPP_NUMERO', 'WHATSAPP_GRUPO', 'GITHUB_TOKEN']) {
 }
 
 const COM_EXECUCAO_MS = 3 * 60_000;
-const SEM_EXECUCAO_MS = 30 * 60_000;
+const SEM_EXECUCAO_MS = 15 * 60_000;
 const estado = lerEstado();
 let timer = null;
 
@@ -31,6 +33,16 @@ const AJUDA =
   '*envio limite 20* — e-mails por dia (máx. 40)\n' +
   '*envio agora 5* — envia já N e-mails reais (máx. 15)\n' +
   '*envio teste fulano@email.com* — 2 e-mails de teste só pra esse endereço\n\n' +
+  '🎬 *Posts de vídeo (TikTok + Instagram)*\n' +
+  '*posts* — situação, fila no Drive e configuração\n' +
+  '*posts ligar* / *posts desligar* — postagem automática\n' +
+  '*posts agora* — posta o próximo vídeo já (ou *posts agora tiktok* / *instagram*)\n' +
+  '*posts por dia 3* — posts por dia (1 a 6)\n' +
+  '*posts horario 10-22* — janela de horário\n' +
+  '*posts redes tiktok,instagram* — em quais redes postar\n' +
+  '*posts instagram normal|teste|ambos* — tipo de Reel\n' +
+  '*posts ordem intercalada|numerica|alfabetica*\n' +
+  '*posts retomar tiktok* — tira a pausa (depois de renovar os cookies)\n\n' +
   '*ajuda* — esta mensagem\n' +
   'Raspagem automática: toda segunda às 06:00.';
 
@@ -58,11 +70,12 @@ async function avisar(texto) {
 // ---------------- acompanhamento ----------------
 function agendar(ms) {
   clearTimeout(timer);
-  timer = setTimeout(() => ciclo().catch((e) => log.erro('ciclo', e.message)).finally(() => agendar(estado.execucao || estado.envioAvisar ? COM_EXECUCAO_MS : SEM_EXECUCAO_MS)), ms);
+  timer = setTimeout(() => ciclo().catch((e) => log.erro('ciclo', e.message)).finally(() => agendar(estado.execucao || estado.envioAvisar || estado.postsAvisar ? COM_EXECUCAO_MS : SEM_EXECUCAO_MS)), ms);
 }
 
 async function ciclo() {
   await acompanharEnvio().catch((e) => log.erro('envio', e.message));
+  await acompanharPosts().catch((e) => log.erro('posts', e.message));
   if (estado.execucao) {
     const run = await gh.execucao(estado.execucao.runId);
     if (run.status !== 'completed') return;
@@ -139,6 +152,10 @@ async function comando(texto, quem) {
     case 'envio':
       return comandoEnvio(args, quem);
 
+    case 'posts':
+    case 'post':
+      return comandoPosts(args);
+
     case 'cancelar': {
       if (!estado.execucao) return avisar('Não há raspagem rodando.');
       await gh.cancelar(estado.execucao.runId);
@@ -213,6 +230,120 @@ async function acompanharEnvio() {
   if (!r) return avisar(`⚠️ Um envio de e-mails terminou (${ultima.conclusion}), sem resumo.`);
   return avisar(`📧 Envio ${r.teste ? 'de TESTE ' : ''}concluído: *${r.enviados}* enviados, ${r.falhas} falha(s)` +
     (r.repetidos ? `, ${r.repetidos} endereço(s) repetido(s) pulado(s)` : '') + '.');
+}
+
+// ---------------- posts de vídeo ----------------
+const PR = () => gh.POSTS_REPO();
+const VARS_POSTS = {
+  POSTS_LIGADO: 'nao', POSTS_REDES: 'tiktok,instagram', POSTS_POR_DIA: '2', POSTS_JANELA: '10-22',
+  POSTS_ORDEM: 'intercalada', IG_MODO: 'normal',
+};
+const NOME_IG = { normal: 'Reel normal', teste: 'Reel de teste', ambos: 'teste + normal' };
+const horaBR = (iso) => new Date(iso).toLocaleTimeString('pt-BR', { timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit' });
+
+async function comandoPosts(args) {
+  const sub = (args[0] || 'status').toLowerCase();
+  const gravar = (nome, valor) => gh.gravarVariavel(nome, valor, PR());
+
+  if (sub === 'status' || sub === 'situacao' || sub === 'situação') {
+    const v = {};
+    await Promise.all(Object.keys(VARS_POSTS).map(async (k) => { v[k] = (await gh.lerVariavel(k, PR())) || VARS_POSTS[k]; }));
+    let texto = `🎬 *Posts de vídeo*\nAutomático: ${v.POSTS_LIGADO === 'sim' ? '🟢 LIGADO' : '🔴 DESLIGADO'}\n` +
+      `${v.POSTS_POR_DIA} por dia, entre ${v.POSTS_JANELA.replace('-', 'h e ')}h (horário sorteado)\n` +
+      `Redes: ${v.POSTS_REDES} · Instagram: ${NOME_IG[v.IG_MODO] || v.IG_MODO} · Ordem: ${v.POSTS_ORDEM}`;
+    const f = await gh.filaStatus().catch(() => null);
+    if (f && f.ok) {
+      texto += `\n\n📂 Fila no Drive: *${f.fila}* vídeo(s) · postados hoje: ${f.hoje}`;
+      if (f.proximos.length) texto += `\nPróximos: ${f.proximos.join(', ')}`;
+      if (f.pela_metade.length) texto += `\n⚠️ Pela metade: ${f.pela_metade.join(', ')}`;
+      for (const [rede, p] of Object.entries(f.pausas || {})) texto += `\n⏸️ *${rede} PAUSADO* (${p.motivo}) — renove e mande *posts retomar ${rede}*`;
+    } else {
+      texto += '\n\n📂 Fila: não consegui consultar o Drive (variável FILA_STATUS_URL configurada?)';
+    }
+    return avisar(texto);
+  }
+  if (sub === 'ligar' || sub === 'desligar') {
+    await gravar('POSTS_LIGADO', sub === 'ligar' ? 'sim' : 'nao');
+    return avisar(sub === 'ligar'
+      ? '🟢 Postagem automática LIGADA. Mande *posts desligar* pra pausar.'
+      : '🔴 Postagem automática DESLIGADA. Nada sai sozinho até *posts ligar*.');
+  }
+  if (sub === 'agora') {
+    const rede = (args[1] || '').toLowerCase();
+    if (rede && !['tiktok', 'instagram'].includes(rede)) return avisar('Ex.: *posts agora*, *posts agora tiktok*, *posts agora instagram*');
+    await gh.dispararPost(rede);
+    estado.postsAvisar = true;
+    salvarEstado(estado);
+    agendar(COM_EXECUCAO_MS);
+    return avisar(`🚀 Postando o próximo vídeo da fila${rede ? ` só no ${rede}` : ''}. Aviso quando terminar (~5 min).`);
+  }
+  if (sub === 'por' || sub === 'pordia' || sub === 'limite') {
+    const n = Number(sub === 'por' ? args[2] : args[1]);
+    if (!Number.isInteger(n) || n < 1 || n > 6) return avisar('Use de 1 a 6. Ex.: *posts por dia 3*');
+    await gravar('POSTS_POR_DIA', n);
+    return avisar(`✅ ${n} post(s) por dia.`);
+  }
+  if (sub === 'horario' || sub === 'horário') {
+    const m = (args[1] || '').match(/^(\d{1,2})-(\d{1,2})$/);
+    if (!m || +m[1] >= +m[2] || +m[1] < 10 || +m[2] > 22) return avisar('Ex.: *posts horario 10-22* (o agendamento roda entre 10h e 22h)');
+    await gravar('POSTS_JANELA', `${+m[1]}-${+m[2]}`);
+    return avisar(`✅ Posts entre ${+m[1]}h e ${+m[2]}h.`);
+  }
+  if (sub === 'redes') {
+    const redes = (args[1] || '').toLowerCase().split(',').filter(Boolean);
+    if (!redes.length || redes.some((r) => !['tiktok', 'instagram'].includes(r))) return avisar('Ex.: *posts redes tiktok,instagram* ou *posts redes instagram*');
+    await gravar('POSTS_REDES', redes.join(','));
+    return avisar(`✅ Postando em: ${redes.join(' + ')}.`);
+  }
+  if (sub === 'instagram' || sub === 'ig') {
+    const modo = (args[1] || '').toLowerCase();
+    if (!NOME_IG[modo]) return avisar('Ex.: *posts instagram normal*, *posts instagram teste* ou *posts instagram ambos*');
+    await gravar('IG_MODO', modo);
+    return avisar(`✅ Instagram: ${NOME_IG[modo]}.`);
+  }
+  if (sub === 'ordem') {
+    const ordem = (args[1] || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+    if (!['intercalada', 'numerica', 'alfabetica'].includes(ordem)) return avisar('Ex.: *posts ordem intercalada*, *numerica* ou *alfabetica*');
+    await gravar('POSTS_ORDEM', ordem);
+    return avisar(`✅ Ordem: ${ordem}.`);
+  }
+  if (sub === 'retomar') {
+    const rede = (args[1] || 'tiktok').toLowerCase();
+    if (!['tiktok', 'instagram'].includes(rede)) return avisar('Ex.: *posts retomar tiktok*');
+    await gh.dispararRetomar(rede);
+    return avisar(`▶️ Retomando ${rede}. Ele volta a postar na próxima execução.`);
+  }
+  return avisar('Opções: *posts*, *posts ligar/desligar*, *posts agora*, *posts por dia N*, *posts horario 10-22*, ' +
+    '*posts redes ...*, *posts instagram normal|teste|ambos*, *posts ordem ...*, *posts retomar tiktok*');
+}
+
+// avisa no grupo cada execução que postou (ou falhou); as que só "não sortearam" ficam quietas
+async function acompanharPosts() {
+  const runs = (await gh.ultimasExecucoes(10, gh.POSTAR, PR()))
+    .filter((r) => r.status === 'completed' && r.id > (estado.ultimoPostVisto || 0))
+    .sort((a, b) => a.id - b.id);
+  if (!runs.length) return;
+  const primeiraVez = !estado.ultimoPostVisto;
+  estado.ultimoPostVisto = runs[runs.length - 1].id;
+  estado.postsAvisar = false;
+  salvarEstado(estado);
+  if (primeiraVez) return; // não repete posts antigos ao ligar o bot
+  for (const run of runs) {
+    const r = await gh.resumo(run.id, 'resultado-post', PR()).catch(() => null);
+    if (!r) {
+      if (run.conclusion === 'failure') await avisar(`⚠️ A postagem das ${horaBR(run.created_at)} falhou antes de postar. Veja em GitHub > sepiastream-posts > Actions.`);
+      continue;
+    }
+    if (r.erro) { await avisar(`⚠️ Postagem das ${horaBR(run.created_at)} falhou: ${r.erro}`); continue; }
+    const linhas = Object.entries(r.redes || {}).map(([rede, st]) => `${st === 'ok' ? '✅' : '❌'} ${rede}${st === 'ok' ? '' : `: ${st}`}`);
+    let texto = `🎬 *${r.video}*\n${linhas.join('\n') || 'nada a postar'}`;
+    const links = (r.links || []).filter(Boolean);
+    if (links.length) texto += `\n${links.join('\n')}`;
+    texto += r.concluido ? `\n📂 Restam ${r.fila - 1} na fila.` : '\n↩️ Continua na fila; a próxima tentativa faz só a rede que faltou.';
+    if (r.pausou) texto += `\n\n⏸️ *${r.pausou} PAUSADO* (pediu login/captcha). Exporte cookies novos, atualize o secret TIKTOK_COOKIES e mande *posts retomar ${r.pausou}*.`;
+    if (r.concluido && r.fila - 1 <= 2) texto += '\n\n📢 Fila quase vazia — coloque mais vídeos na pasta Fila do Drive.';
+    await avisar(texto);
+  }
 }
 
 // ---------------- início ----------------

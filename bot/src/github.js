@@ -9,8 +9,8 @@ function repo() {
   return process.env.GITHUB_REPO || 'sgveng3-lang/leads-provedores';
 }
 
-async function gh(caminho, opcoes = {}) {
-  const resp = await fetch(`${API}/repos/${repo()}${caminho}`, {
+async function gh(caminho, opcoes = {}, repositorio = repo()) {
+  const resp = await fetch(`${API}/repos/${repositorio}${caminho}`, {
     ...opcoes,
     headers: {
       Authorization: `Bearer ${process.env.GITHUB_TOKEN}`,
@@ -33,8 +33,8 @@ export async function disparar({ ufs = 'TODAS', pedido }) {
   });
 }
 
-export async function ultimasExecucoes(quantidade = 5, workflow = WORKFLOW) {
-  const r = await gh(`/actions/workflows/${workflow}/runs?per_page=${quantidade}`);
+export async function ultimasExecucoes(quantidade = 5, workflow = WORKFLOW, repositorio = repo()) {
+  const r = await gh(`/actions/workflows/${workflow}/runs?per_page=${quantidade}`, {}, repositorio);
   return (await r.json()).workflow_runs || [];
 }
 
@@ -50,8 +50,8 @@ export async function dispararEnvio({ limite, testePara = '' }) {
 
 // Variáveis do repositório (ENVIO_LIGADO, ENVIO_LIMITE) — token precisa de
 // "Variables: Read and write".
-export async function lerVariavel(nome) {
-  const r = await fetch(`${API}/repos/${repo()}/actions/variables/${nome}`, {
+export async function lerVariavel(nome, repositorio = repo()) {
+  const r = await fetch(`${API}/repos/${repositorio}/actions/variables/${nome}`, {
     headers: { Authorization: `Bearer ${process.env.GITHUB_TOKEN}`, Accept: 'application/vnd.github+json', 'User-Agent': 'leads-bot' },
   });
   if (r.status === 404) return null;
@@ -59,12 +59,12 @@ export async function lerVariavel(nome) {
   return (await r.json()).value;
 }
 
-export async function gravarVariavel(nome, valor) {
-  const atual = await lerVariavel(nome);
+export async function gravarVariavel(nome, valor, repositorio = repo()) {
+  const atual = await lerVariavel(nome, repositorio);
   if (atual === null) {
-    await gh('/actions/variables', { method: 'POST', body: JSON.stringify({ name: nome, value: String(valor) }) });
+    await gh('/actions/variables', { method: 'POST', body: JSON.stringify({ name: nome, value: String(valor) }) }, repositorio);
   } else {
-    await gh(`/actions/variables/${nome}`, { method: 'PATCH', body: JSON.stringify({ name: nome, value: String(valor) }) });
+    await gh(`/actions/variables/${nome}`, { method: 'PATCH', body: JSON.stringify({ name: nome, value: String(valor) }) }, repositorio);
   }
 }
 
@@ -97,11 +97,11 @@ export async function cancelar(runId) {
 }
 
 // Resumo (só contagens) que o job "consolidar" publica como artefato "resumo".
-export async function resumo(runId, nome = 'resumo') {
-  const arts = (await (await gh(`/actions/runs/${runId}/artifacts?per_page=100`)).json()).artifacts || [];
+export async function resumo(runId, nome = 'resumo', repositorio = repo()) {
+  const arts = (await (await gh(`/actions/runs/${runId}/artifacts?per_page=100`, {}, repositorio)).json()).artifacts || [];
   const art = arts.find((a) => a.name === nome);
   if (!art) return null;
-  const zip = Buffer.from(await (await gh(`/actions/artifacts/${art.id}/zip`)).arrayBuffer());
+  const zip = Buffer.from(await (await gh(`/actions/artifacts/${art.id}/zip`, {}, repositorio)).arrayBuffer());
   return JSON.parse(primeiroArquivoDoZip(zip).toString('utf8'));
 }
 
@@ -126,4 +126,31 @@ export async function garantirAgendamentoAtivo() {
     return true;
   }
   return false;
+}
+
+// ---------- posts de vídeo (repo privado sepiastream-posts) ----------
+export const POSTS_REPO = () => process.env.POSTS_REPO || 'sgveng3-lang/sepiastream-posts';
+export const POSTAR = 'postar.yml';
+
+export async function dispararPost(redes = '') {
+  await gh(`/actions/workflows/${POSTAR}/dispatches`, {
+    method: 'POST',
+    body: JSON.stringify({ ref: 'main', inputs: { agora: true, redes } }),
+  }, POSTS_REPO());
+}
+
+export async function dispararRetomar(rede) {
+  await gh('/actions/workflows/retomar.yml/dispatches', {
+    method: 'POST',
+    body: JSON.stringify({ ref: 'main', inputs: { rede } }),
+  }, POSTS_REPO());
+}
+
+// Situação da fila no Drive: GET público do Apps Script (só nomes e contagens).
+// A URL fica na variável FILA_STATUS_URL do repo de posts.
+export async function filaStatus() {
+  const url = await lerVariavel('FILA_STATUS_URL', POSTS_REPO());
+  if (!url) return null;
+  const r = await fetch(`${url}?acao=status`, { redirect: 'follow' });
+  return r.json();
 }
