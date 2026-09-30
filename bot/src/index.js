@@ -42,6 +42,7 @@ const AJUDA =
   '*posts tiktok por dia 3* / *posts instagram por dia 2* — posts por dia (1 a 6)\n' +
   '*posts instagram normal|teste|ambos* — tipo de Reel\n' +
   '*posts horario 10-22* — janela de horário (as duas)\n' +
+  '*posts intervalo 10h* — tempo mínimo entre posts da mesma rede\n' +
   '*posts ordem intercalada|numerica|alfabetica*\n' +
   '*posts tiktok retomar* — tira a pausa (depois de renovar os cookies)\n\n' +
   '*ajuda* — esta mensagem\n' +
@@ -242,10 +243,15 @@ const NOME_REDE = { tiktok: 'TikTok', instagram: 'Instagram' };
 const NOME_IG = { normal: 'Reel normal', teste: 'Reel de teste', ambos: 'teste + normal' };
 const PADRAO_POSTS = {
   TIKTOK_LIGADO: 'nao', INSTAGRAM_LIGADO: 'nao', TIKTOK_POR_DIA: '2', INSTAGRAM_POR_DIA: '2',
-  POSTS_JANELA: '10-22', POSTS_ORDEM: 'intercalada', IG_MODO: 'normal',
+  POSTS_JANELA: '10-22', POSTS_INTERVALO_MIN: '90', POSTS_ORDEM: 'intercalada', IG_MODO: 'normal',
 };
 const horaBR = (iso) => new Date(iso).toLocaleTimeString('pt-BR', { timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit' });
 const semAcento = (t) => (t || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+
+function formatarIntervalo(min) {
+  const h = Math.floor(+min / 60), m = +min % 60;
+  return h && m ? `${h}h${m}` : h ? `${h}h` : `${m} min`;
+}
 
 async function lerConfigPosts() {
   const v = {};
@@ -269,7 +275,7 @@ async function statusPosts() {
     }
     if (pausa) texto += `\n(${pausa.motivo}) — renove e mande *posts ${rede} retomar*`;
   }
-  texto += `\n\n🕐 Entre ${v.POSTS_JANELA.replace('-', 'h e ')}h (horário sorteado) · ordem ${v.POSTS_ORDEM}`;
+  texto += `\n\n🕐 Entre ${v.POSTS_JANELA.replace('-', 'h e ')}h (horário sorteado) · mínimo de ${formatarIntervalo(v.POSTS_INTERVALO_MIN)} entre posts da mesma rede · ordem ${v.POSTS_ORDEM}`;
   texto += f && f.ok ? `\n📂 Fila no Drive: ${f.fila} vídeo(s)` : '\n📂 Fila: não consegui consultar o Drive (variável FILA_STATUS_URL configurada?)';
   return avisar(texto);
 }
@@ -335,6 +341,17 @@ async function comandoPosts(args) {
     await gravar('POSTS_JANELA', `${+m[1]}-${+m[2]}`);
     return avisar(`✅ Posts entre ${+m[1]}h e ${+m[2]}h (vale pras duas redes).`);
   }
+  if (sub === 'intervalo') {
+    // aceita "10h", "10", "1h30", "90min"
+    const t = semAcento(args[1]).replace(/\s/g, '');
+    let minutos = null;
+    let m = t.match(/^(\d{1,3})min$/);
+    if (m) minutos = +m[1];
+    else if ((m = t.match(/^(\d{1,2})(?:h(\d{1,2})?)?$/))) minutos = +m[1] * 60 + (m[2] ? +m[2] : 0);
+    if (minutos === null || minutos < 30 || minutos > 24 * 60) return avisar('Ex.: *posts intervalo 10h*, *posts intervalo 1h30* ou *posts intervalo 90min* (de 30 min a 24h)');
+    await gravar('POSTS_INTERVALO_MIN', minutos);
+    return avisar(`✅ Mínimo de ${formatarIntervalo(minutos)} entre posts da mesma rede.`);
+  }
   if (sub === 'ordem') {
     const ordem = semAcento(args[1]);
     if (!['intercalada', 'numerica', 'alfabetica'].includes(ordem)) return avisar('Ex.: *posts ordem intercalada*, *numerica* ou *alfabetica*');
@@ -342,7 +359,7 @@ async function comandoPosts(args) {
     return avisar(`✅ Ordem: ${ordem}.`);
   }
   return avisar('Opções: *posts*, *posts tiktok ligar/desligar*, *posts instagram ligar/desligar*, *posts ligar/desligar* (as duas), ' +
-    '*posts agora*, *posts tiktok por dia N*, *posts instagram normal|teste|ambos*, *posts horario 10-22*, *posts ordem ...*, *posts tiktok retomar*');
+    '*posts agora*, *posts tiktok por dia N*, *posts instagram normal|teste|ambos*, *posts horario 10-22*, *posts intervalo 10h*, *posts ordem ...*, *posts tiktok retomar*');
 }
 
 // avisa no grupo cada execução que postou (ou falhou); as que só "não sortearam" ficam quietas
