@@ -132,10 +132,11 @@ export async function garantirAgendamentoAtivo() {
 export const POSTS_REPO = () => process.env.POSTS_REPO || 'sgveng3-lang/sepiastream-posts';
 export const POSTAR = 'postar.yml';
 
-export async function dispararPost(redes = '') {
+// agora=false: execução "da hora" — o postar.py sorteia se posta, como no agendamento
+export async function dispararPost(redes = '', agora = true) {
   await gh(`/actions/workflows/${POSTAR}/dispatches`, {
     method: 'POST',
-    body: JSON.stringify({ ref: 'main', inputs: { agora: true, redes } }),
+    body: JSON.stringify({ ref: 'main', inputs: { agora, redes } }),
   }, POSTS_REPO());
 }
 

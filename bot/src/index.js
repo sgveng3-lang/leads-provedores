@@ -248,51 +248,108 @@ async function acompanharEnvio() {
   }
 }
 
-// ---------------- envio diário às 09:00 ----------------
-// O agendamento do GitHub atrasa horas, então quem dispara o envio do dia é o bot.
-// Dias úteis a partir das 09:00; se o bot estava fora, dispara quando voltar, mas
-// só até as 16:00. O cron do GitHub (11:00) fica de reserva e pula sozinho se o
-// envio "diario" já rodou.
-const ENVIO_DESDE = 9;
+// ---------------- agendamentos feitos pelo bot ----------------
+// O agendamento (cron) do GitHub atrasa horas e às vezes nem roda (30/09: das 12
+// rodadas de hora em hora dos posts, só 3 aconteceram). Por isso quem dá a partida
+// é o bot, conferindo a cada minuto. Os crons do GitHub ficam só de reserva.
+const ENVIO_DESDE = 9; // e-mails: dias úteis 09:00; se o bot estava fora, até 16:00
 const ENVIO_ATE = 16;
-let conferindoEnvio = false;
+const POSTS_DESDE = 10; // posts: uma rodada de sorteio por hora, 10:07 a 21:07
+const POSTS_ATE = 22;
+const POSTS_MINUTO = 7;
+const RASPAR_DESDE = 6; // raspagem: segunda 06:00; se o bot estava fora, até 18:00
+const RASPAR_ATE = 18;
+let rodandoAgenda = false;
 
-function agoraBR() {
+function agoraBR(data = new Date()) {
   const p = Object.fromEntries(
     new Intl.DateTimeFormat('en-CA', {
-      timeZone: 'America/Sao_Paulo', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', hourCycle: 'h23', weekday: 'short',
-    }).formatToParts(new Date()).map((x) => [x.type, x.value]),
+      timeZone: 'America/Sao_Paulo', year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', hourCycle: 'h23', weekday: 'short',
+    }).formatToParts(data).map((x) => [x.type, x.value]),
   );
-  return { dia: `${p.year}-${p.month}-${p.day}`, hora: Number(p.hour), util: !['Sat', 'Sun'].includes(p.weekday) };
+  return {
+    dia: `${p.year}-${p.month}-${p.day}`, hora: Number(p.hour), minuto: Number(p.minute),
+    semana: p.weekday, util: !['Sat', 'Sun'].includes(p.weekday),
+  };
 }
-const diaBR = (iso) => new Date(iso).toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' });
+const diaBR = (iso) => agoraBR(new Date(iso)).dia;
+
+async function agendamentos() {
+  if (rodandoAgenda) return;
+  rodandoAgenda = true;
+  try {
+    await envioDiario().catch((e) => log.erro('envio diário', e.message));
+    await postsDaHora().catch((e) => log.erro('posts da hora', e.message));
+    await raspagemSemanal().catch((e) => log.erro('raspagem semanal', e.message));
+  } finally {
+    rodandoAgenda = false;
+  }
+}
+
+// Posts: o bot faz a "rodada da hora" (agora=false); o postar.py decide sozinho se
+// posta (sorteio, janela, intervalo, posts por dia). Se o cron do GitHub já rodou
+// nesta hora, o bot não repete.
+async function postsDaHora() {
+  const { dia, hora, minuto } = agoraBR();
+  const chave = `${dia} ${hora}`;
+  if (hora < POSTS_DESDE || hora >= POSTS_ATE || minuto < POSTS_MINUTO || estado.postsHora === chave) return;
+  const [tt, ig] = await Promise.all([gh.lerVariavel('TIKTOK_LIGADO', PR()), gh.lerVariavel('INSTAGRAM_LIGADO', PR())]);
+  if (tt === 'sim' || ig === 'sim') {
+    const nestaHora = (await gh.ultimasExecucoes(5, gh.POSTAR, PR())).some((r) => {
+      const t = agoraBR(new Date(r.created_at));
+      return t.dia === dia && t.hora === hora;
+    });
+    if (!nestaHora) {
+      await gh.dispararPost('', false);
+      log.info(`posts: rodada das ${hora}h disparada`);
+    }
+  }
+  estado.postsHora = chave;
+  salvarEstado(estado);
+}
+
+// Raspagem: segunda-feira; o cron do GitHub (segunda 12:00) é reserva e pula se
+// a "semanal-bot" já rodou no dia.
+async function raspagemSemanal() {
+  const { dia, hora, semana } = agoraBR();
+  if (semana !== 'Mon' || hora < RASPAR_DESDE || hora >= RASPAR_ATE || estado.raspagemDia === dia || estado.execucao) return;
+  const jaHoje = (await gh.ultimasExecucoes(10)).some((r) => diaBR(r.created_at) === dia && r.event !== 'schedule');
+  estado.raspagemDia = dia;
+  salvarEstado(estado);
+  if (jaHoje) return; // alguém já raspou hoje pelo grupo/site
+  const pedido = 'semanal-bot';
+  await gh.disparar({ ufs: 'TODAS', pedido });
+  await avisar('🚀 Raspagem semanal começou (Brasil inteiro, até ~2 h). Aviso aqui quando terminar.');
+  const run = await gh.acharExecucaoDoPedido(pedido);
+  if (!run) return avisar('⚠️ Disparei a raspagem semanal, mas não achei a execução no GitHub. Confira em Actions.');
+  estado.execucao = { runId: run.id, pedido: 'semanal', inicio: agora() };
+  estado.ultimoRunVisto = Math.max(estado.ultimoRunVisto, run.id);
+  salvarEstado(estado);
+  agendar(COM_EXECUCAO_MS);
+}
 
 async function envioDiario() {
   const { dia, hora, util } = agoraBR();
-  if (!util || hora < ENVIO_DESDE || hora >= ENVIO_ATE || estado.envioDiarioDia === dia || conferindoEnvio) return;
-  conferindoEnvio = true;
-  try {
-    if ((await gh.lerVariavel('ENVIO_LIGADO')) !== 'sim') return; // desligado: confere de novo no próximo minuto
-    const hoje = (await gh.ultimasExecucoes(10, gh.ENVIO)).filter((r) => diaBR(r.created_at) === dia);
-    if (hoje.some((r) => r.event === 'schedule' && r.status !== 'completed')) return; // reserva decidindo agora: confere no próximo minuto
-    let jaEnviou = hoje.some((r) => (r.display_title || '').endsWith('diario'));
-    for (const r of hoje.filter((x) => x.event === 'schedule')) {
-      if (!jaEnviou && (await gh.resumo(r.id, 'resumo-envio').catch(() => null))) jaEnviou = true; // a reserva já enviou
-    }
-    let limite = null;
-    if (!jaEnviou) {
-      limite = (await gh.lerVariavel('ENVIO_LIMITE')) || 15;
-      await gh.dispararEnvio({ limite, origem: 'diario' });
-      estado.envioAvisar = true;
-    }
-    estado.envioDiarioDia = dia;
-    salvarEstado(estado);
-    if (limite) {
-      agendar(COM_EXECUCAO_MS);
-      await avisar(`📨 Envio do dia começou: ${limite} e-mail(s), um a cada 8–15 min. Aviso quando terminar.`);
-    }
-  } finally {
-    conferindoEnvio = false;
+  if (!util || hora < ENVIO_DESDE || hora >= ENVIO_ATE || estado.envioDiarioDia === dia) return;
+  if ((await gh.lerVariavel('ENVIO_LIGADO')) !== 'sim') return; // desligado: confere de novo no próximo minuto
+  const hoje = (await gh.ultimasExecucoes(10, gh.ENVIO)).filter((r) => diaBR(r.created_at) === dia);
+  if (hoje.some((r) => r.event === 'schedule' && r.status !== 'completed')) return; // reserva decidindo agora: confere no próximo minuto
+  let jaEnviou = hoje.some((r) => (r.display_title || '').endsWith('diario'));
+  for (const r of hoje.filter((x) => x.event === 'schedule')) {
+    if (!jaEnviou && (await gh.resumo(r.id, 'resumo-envio').catch(() => null))) jaEnviou = true; // a reserva já enviou
+  }
+  let limite = null;
+  if (!jaEnviou) {
+    limite = (await gh.lerVariavel('ENVIO_LIMITE')) || 15;
+    await gh.dispararEnvio({ limite, origem: 'diario' });
+    estado.envioAvisar = true;
+  }
+  estado.envioDiarioDia = dia;
+  salvarEstado(estado);
+  if (limite) {
+    agendar(COM_EXECUCAO_MS);
+    await avisar(`📨 Envio do dia começou: ${limite} e-mail(s), um a cada 8–15 min. Aviso quando terminar.`);
   }
 }
 
@@ -497,5 +554,5 @@ async function prepararGrupo() {
 
 await prepararGrupo();
 agendar(10_000);
-setInterval(() => envioDiario().catch((e) => log.erro('envio diário', e.message)), 60_000);
+setInterval(agendamentos, 60_000);
 log.info('bot no ar');

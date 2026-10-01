@@ -2,10 +2,12 @@ name: raspar
 run-name: "raspar ${{ inputs.ufs || 'TODAS' }} · ${{ inputs.pedido || 'semanal' }}"
 
 # Raspa TODAS as UFs de uma vez: um job por UF (até 6 em paralelo).
-# Automático toda segunda às 06:00 (Brasília) = 09:00 UTC; também pode ser disparado à mão.
+# Automático toda segunda às 06:00 (Brasília): quem dispara é o bot do Discloud
+# (pedido "semanal-bot"), porque o cron do GitHub atrasa horas ou nem roda. O cron
+# abaixo (segunda 12:00) é só reserva: o job "guarda" pula se o bot já raspou no dia.
 on:
   schedule:
-    - cron: "0 9 * * 1"
+    - cron: "0 15 * * 1" # 12:00 Brasília: reserva, depois do bot
   workflow_dispatch:
     inputs:
       ufs:
@@ -32,7 +34,28 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # agendado (reserva): confere se a raspagem "semanal-bot" já rodou hoje
+  guarda:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    outputs:
+      ja_rodou: ${{ steps.v.outputs.ja_rodou }}
+    steps:
+      - id: v
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          desde="$(date -u -d '3 hours ago' +%F)T03:00:00Z"   # meia-noite de Brasília (UTC-3) em UTC
+          n=$(gh run list -R "$GITHUB_REPOSITORY" -w raspar.yml -L 30 --json displayTitle,createdAt \
+            --jq "[.[] | select((.displayTitle | endswith(\"semanal-bot\")) and .createdAt >= \"$desde\")] | length")
+          echo "raspagens do bot desde $desde: $n"
+          echo "ja_rodou=$([ "$n" -gt 0 ] && echo sim || echo nao)" >> "$GITHUB_OUTPUT"
+
   base:
+    needs: guarda
+    if: ${{ !cancelled() && (github.event_name != 'schedule' || needs.guarda.outputs.ja_rodou == 'nao') }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     outputs:
@@ -69,6 +92,8 @@ jobs:
 
   raspar:
     needs: base
+    # explícito: com o "guarda" pulado (disparo manual), o padrão success() pularia este job
+    if: ${{ !cancelled() && needs.base.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 300
     strategy:
