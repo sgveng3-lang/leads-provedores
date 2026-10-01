@@ -5,7 +5,7 @@
 // Também controla os posts de vídeo (TikTok/Instagram) do repo sepiastream-posts.
 //
 // Timers: com raspagem em andamento, consulta o GitHub a cada 3 min; sem
-// raspagem, a cada 15 min (pra notar a raspagem semanal e os posts agendados).
+// raspagem, a cada 15 min (pra notar a raspagem mensal e os posts agendados).
 import { carregarEnv, lerEstado, log, salvarEstado } from './base.js';
 import * as gh from './github.js';
 import { acharGrupo, conectar, enviar, idsEnviadosPeloBot, textoDa } from './whatsapp.js';
@@ -46,7 +46,7 @@ const AJUDA =
   '*posts ordem intercalada|numerica|alfabetica*\n' +
   '*posts tiktok retomar* — tira a pausa (depois de renovar os cookies)\n\n' +
   '*ajuda* — esta mensagem\n' +
-  'Raspagem automática: toda segunda às 06:00.';
+  'Raspagem automática: último dia do mês às 06:00.';
 
 const agora = () => Math.floor(Date.now() / 1000);
 const minutos = (desde) => Math.round((agora() - desde) / 60);
@@ -93,10 +93,10 @@ async function ciclo() {
     return avisar(texto);
   }
 
-  // sem execução do bot: procura execução nova (ex.: a semanal automática)
+  // sem execução do bot: procura execução nova (ex.: a mensal automática)
   const [ultima] = await gh.ultimasExecucoes(1);
   if (ultima && ultima.id > estado.ultimoRunVisto && ultima.status !== 'completed') {
-    estado.execucao = { runId: ultima.id, pedido: ultima.event === 'schedule' ? 'semanal' : 'manual', inicio: agora() };
+    estado.execucao = { runId: ultima.id, pedido: ultima.event === 'schedule' ? 'mensal' : 'manual', inicio: agora() };
     estado.ultimoRunVisto = ultima.id;
     salvarEstado(estado);
     await avisar(`🚀 Raspagem ${estado.execucao.pedido} começou no GitHub. Aviso aqui quando terminar.`);
@@ -104,7 +104,7 @@ async function ciclo() {
 
   // 1x por semana: religa o agendamento se o GitHub desligou por inatividade
   if (agora() - (estado.ultimaChecagemAgenda || 0) > 7 * 86400) {
-    if (await gh.garantirAgendamentoAtivo()) await avisar('🔁 O GitHub tinha desligado a raspagem semanal por inatividade; religuei.');
+    if (await gh.garantirAgendamentoAtivo()) await avisar('🔁 O GitHub tinha desligado a raspagem mensal por inatividade; religuei.');
     estado.ultimaChecagemAgenda = agora();
     salvarEstado(estado);
   }
@@ -142,7 +142,7 @@ async function comando(texto, quem) {
       if (!estado.execucao) {
         const [ultima] = await gh.ultimasExecucoes(1);
         const quando = ultima ? new Date(ultima.created_at).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' }) : '—';
-        return avisar(`💤 Nenhuma raspagem rodando.\nÚltima: ${quando} (${ultima?.conclusion || '—'}).\nPróxima automática: segunda às 06:00.`);
+        return avisar(`💤 Nenhuma raspagem rodando.\nÚltima: ${quando} (${ultima?.conclusion || '—'}).\nPróxima automática: último dia do mês às 06:00.`);
       }
       const p = await gh.progresso(estado.execucao.runId);
       return avisar(
@@ -257,7 +257,7 @@ const ENVIO_ATE = 16;
 const POSTS_DESDE = 10; // posts: uma rodada de sorteio por hora, 10:07 a 21:07
 const POSTS_ATE = 22;
 const POSTS_MINUTO = 7;
-const RASPAR_DESDE = 6; // raspagem: segunda 06:00; se o bot estava fora, até 18:00
+const RASPAR_DESDE = 6; // raspagem: último dia do mês 06:00; se o bot estava fora, até 18:00
 const RASPAR_ATE = 18;
 let rodandoAgenda = false;
 
@@ -281,7 +281,7 @@ async function agendamentos() {
   try {
     await envioDiario().catch((e) => log.erro('envio diário', e.message));
     await postsDaHora().catch((e) => log.erro('posts da hora', e.message));
-    await raspagemSemanal().catch((e) => log.erro('raspagem semanal', e.message));
+    await raspagemMensal().catch((e) => log.erro('raspagem mensal', e.message));
   } finally {
     rodandoAgenda = false;
   }
@@ -309,21 +309,26 @@ async function postsDaHora() {
   salvarEstado(estado);
 }
 
-// Raspagem: segunda-feira; o cron do GitHub (segunda 12:00) é reserva e pula se
-// a "semanal-bot" já rodou no dia.
-async function raspagemSemanal() {
-  const { dia, hora, semana } = agoraBR();
-  if (semana !== 'Mon' || hora < RASPAR_DESDE || hora >= RASPAR_ATE || estado.raspagemDia === dia || estado.execucao) return;
+// Raspagem: 1x por mês, no último dia do mês; o cron do GitHub (dias 28–31 às
+// 12:00) é reserva e só roda no último dia, se a "mensal-bot" ainda não rodou.
+function ultimoDiaDoMes(dia) {
+  const [a, m, d] = dia.split('-').map(Number);
+  return d === new Date(Date.UTC(a, m, 0)).getUTCDate(); // dia 0 do mês seguinte = último deste
+}
+
+async function raspagemMensal() {
+  const { dia, hora } = agoraBR();
+  if (!ultimoDiaDoMes(dia) || hora < RASPAR_DESDE || hora >= RASPAR_ATE || estado.raspagemDia === dia || estado.execucao) return;
   const jaHoje = (await gh.ultimasExecucoes(10)).some((r) => diaBR(r.created_at) === dia && r.event !== 'schedule');
   estado.raspagemDia = dia;
   salvarEstado(estado);
   if (jaHoje) return; // alguém já raspou hoje pelo grupo/site
-  const pedido = 'semanal-bot';
+  const pedido = 'mensal-bot';
   await gh.disparar({ ufs: 'TODAS', pedido });
-  await avisar('🚀 Raspagem semanal começou (Brasil inteiro, até ~2 h). Aviso aqui quando terminar.');
+  await avisar('🚀 Raspagem mensal começou (Brasil inteiro, até ~2 h). Aviso aqui quando terminar.');
   const run = await gh.acharExecucaoDoPedido(pedido);
-  if (!run) return avisar('⚠️ Disparei a raspagem semanal, mas não achei a execução no GitHub. Confira em Actions.');
-  estado.execucao = { runId: run.id, pedido: 'semanal', inicio: agora() };
+  if (!run) return avisar('⚠️ Disparei a raspagem mensal, mas não achei a execução no GitHub. Confira em Actions.');
+  estado.execucao = { runId: run.id, pedido: 'mensal', inicio: agora() };
   estado.ultimoRunVisto = Math.max(estado.ultimoRunVisto, run.id);
   salvarEstado(estado);
   agendar(COM_EXECUCAO_MS);

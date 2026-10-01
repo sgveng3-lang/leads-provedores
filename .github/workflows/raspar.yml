@@ -1,13 +1,14 @@
 name: raspar
-run-name: "raspar ${{ inputs.ufs || 'TODAS' }} · ${{ inputs.pedido || 'semanal' }}"
+run-name: "raspar ${{ inputs.ufs || 'TODAS' }} · ${{ inputs.pedido || 'mensal' }}"
 
 # Raspa TODAS as UFs de uma vez: um job por UF (até 6 em paralelo).
-# Automático toda segunda às 06:00 (Brasília): quem dispara é o bot do Discloud
-# (pedido "semanal-bot"), porque o cron do GitHub atrasa horas ou nem roda. O cron
-# abaixo (segunda 12:00) é só reserva: o job "guarda" pula se o bot já raspou no dia.
+# Automático 1x por mês, no ÚLTIMO DIA do mês às 06:00 (Brasília): quem dispara é o
+# bot do Discloud (pedido "mensal-bot"), porque o cron do GitHub atrasa horas ou nem
+# roda. O cron abaixo (dias 28–31, 12:00) é só reserva: o job "guarda" só deixa rodar
+# no último dia do mês e se o bot ainda não raspou nesse dia.
 on:
   schedule:
-    - cron: "0 15 * * 1" # 12:00 Brasília: reserva, depois do bot
+    - cron: "0 15 28-31 * *" # 12:00 Brasília: reserva, depois do bot (o guarda filtra o último dia)
   workflow_dispatch:
     inputs:
       ufs:
@@ -34,7 +35,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # agendado (reserva): confere se a raspagem "semanal-bot" já rodou hoje
+  # agendado (reserva): só no último dia do mês e se a "mensal-bot" ainda não rodou hoje
   guarda:
     if: github.event_name == 'schedule'
     runs-on: ubuntu-latest
@@ -47,9 +48,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          desde="$(date -u -d '3 hours ago' +%F)T03:00:00Z"   # meia-noite de Brasília (UTC-3) em UTC
+          hoje=$(date -u -d '3 hours ago' +%F)   # data de Brasília (UTC-3)
+          if [ "$(date -u -d "$hoje + 1 day" +%d)" != "01" ]; then
+            echo "$hoje não é o último dia do mês"
+            echo "ja_rodou=sim" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          desde="${hoje}T03:00:00Z"   # meia-noite de Brasília em UTC
           n=$(gh run list -R "$GITHUB_REPOSITORY" -w raspar.yml -L 30 --json displayTitle,createdAt \
-            --jq "[.[] | select((.displayTitle | endswith(\"semanal-bot\")) and .createdAt >= \"$desde\")] | length")
+            --jq "[.[] | select((.displayTitle | endswith(\"mensal-bot\")) and .createdAt >= \"$desde\")] | length")
           echo "raspagens do bot desde $desde: $n"
           echo "ja_rodou=$([ "$n" -gt 0 ] && echo sim || echo nao)" >> "$GITHUB_OUTPUT"
 
@@ -127,7 +134,7 @@ jobs:
           python scraper/main.py raspar --uf "${{ matrix.uf }}"
           --limite "${{ inputs.limite_por_uf || '0' }}"
           --min-acessos "${{ inputs.min_acessos || '200' }}" --max-acessos "${{ inputs.max_acessos || '0' }}"
-          --pedido "${{ inputs.pedido || 'semanal' }}" --sem-registro
+          --pedido "${{ inputs.pedido || 'mensal' }}" --sem-registro
           --saida "_dados/resumo-${{ matrix.uf }}.json"
       - if: always()
         uses: actions/cache/save@v4
@@ -166,7 +173,7 @@ jobs:
           PLANILHA_TOKEN: ${{ secrets.PLANILHA_TOKEN }}
         run: >
           python scraper/main.py consolidar --pasta _dados/resumos
-          --pedido "${{ inputs.pedido || 'semanal' }}" --inicio "${{ needs.base.outputs.inicio }}"
+          --pedido "${{ inputs.pedido || 'mensal' }}" --inicio "${{ needs.base.outputs.inicio }}"
       # só contagens — o bot lê este resumo
       - if: always()
         uses: actions/upload-artifact@v4
