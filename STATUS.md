@@ -11,7 +11,7 @@ WhatsApp (grupo "sepiastream")  ←→  Bot no Discloud (Node, ~50 MB, 24/7)
                                          ▼
 GitHub Actions (repo público sgveng3-lang/leads-provedores)
   raspar.yml  → toda segunda 06:00 BRT: Anatel → OpenCNPJ → site do provedor → planilha
-  enviar.yml  → dias úteis 09:00 BRT (só com ENVIO_LIGADO=sim): e-mails pela API do Zoho
+  enviar.yml  → disparado pelo BOT às 09:00 BRT em dias úteis (origem "diario", só com ENVIO_LIGADO=sim); cron 11:00 é só reserva e pula se o bot já enviou (o agendamento do GitHub atrasava ~5h40). E-mails pela API do Zoho
                                          │ Apps Script (App da Web)
                                          ▼
 Google Sheets "Leads Provedores" (conta sgveng3@gmail.com)
@@ -23,7 +23,7 @@ Google Sheets "Leads Provedores" (conta sgveng3@gmail.com)
 |---|---|
 | Raspagem | ✅ Funcionando. 1ª rodada completa: 26/27 UFs, ~6.900 leads com e-mail. PB/MT/RS falharam (corrigido o retry); entram na próxima segunda. |
 | Planilha | ✅ Abas Provedores e Execuções. Controle de envio: **Já enviado (SIM/NÃO)**, Enviado em, Enviado para, Status. Colunas Status/Observações/Já enviado nunca são sobrescritas pela raspagem. |
-| Envio de e-mails | ✅ Pronto, mas **DESLIGADO** (`ENVIO_LIGADO=nao`). Para: e-mail da Receita; Cc: e-mails do site (até 3). PDF anexado. Foco em 200–20 mil assinantes; ignora fiscal/contábil. 1 e-mail a cada 8–15 min, limite 15/dia. Trava contra repetição por CNPJ e por endereço. Descadastro em 1 clique. |
+| Envio de e-mails | ✅ **LIGADO desde 30/09/2026** (`ENVIO_LIGADO=sim`). Bot dispara às 09:00 (se estava fora, até 16:00). Para: e-mail da Receita; Cc: e-mails do site (até 3). PDF anexado. Foco em 200–20 mil assinantes; ignora fiscal/contábil. 1 e-mail a cada 8–15 min, limite 15/dia. Trava contra repetição por CNPJ e por endereço. Descadastro em 1 clique. |
 | Bot WhatsApp | ✅ Online no Discloud. Comandos: `raspar [UFs]`, `status`, `cancelar`, `planilha`, `envio`, `envio ligar/desligar`, `envio limite N`, `envio agora N`, `envio teste email`, `ajuda`. |
 
 ## Próximos passos
