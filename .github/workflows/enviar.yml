@@ -1,12 +1,15 @@
 name: enviar
-run-name: "enviar e-mails · ${{ github.event_name }}"
+run-name: "enviar e-mails · ${{ inputs.origem || github.event_name }}"
 
-# Prospecção em ritmo lento: dias úteis às 09:00 (Brasília) = 12:00 UTC.
+# Prospecção em ritmo lento: dias úteis às 09:00 (Brasília).
+# Quem dispara às 09:00 é o bot do Discloud (origem "diario"), porque o agendamento
+# do GitHub atrasa horas (já iniciou às 14:40). O cron abaixo (11:00) fica só de reserva:
+# se o envio "diario" do bot já rodou hoje, o job "guarda" impede um segundo lote.
 # Limite por dia na variável do repositório ENVIO_LIMITE (padrão 15).
 # Liga/desliga o envio AUTOMÁTICO: variável ENVIO_LIGADO = sim (o bot do WhatsApp controla).
 on:
   schedule:
-    - cron: "0 12 * * 1-5"
+    - cron: "0 14 * * 1-5" # 11:00 Brasília: reserva, depois do bot
   workflow_dispatch:
     inputs:
       limite:
@@ -15,6 +18,9 @@ on:
       teste_para:
         description: "Modo teste: manda tudo pra este e-mail e não marca na planilha (vazio = envio real)"
         default: ""
+      origem:
+        description: "Quem disparou (o bot usa 'diario' no envio das 09:00)"
+        default: "manual"
 
 permissions:
   contents: read
@@ -24,9 +30,29 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # agendado (reserva): confere se o envio "diario" do bot já rodou hoje
+  guarda:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    outputs:
+      ja_enviou: ${{ steps.v.outputs.ja_enviou }}
+    steps:
+      - id: v
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          desde="$(date -u -d '3 hours ago' +%F)T03:00:00Z"   # meia-noite de Brasília (UTC-3) em UTC
+          n=$(gh run list -R "$GITHUB_REPOSITORY" -w enviar.yml -L 30 --json displayTitle,createdAt \
+            --jq "[.[] | select((.displayTitle | endswith(\"diario\")) and .createdAt >= \"$desde\")] | length")
+          echo "envios do bot desde $desde: $n"
+          echo "ja_enviou=$([ "$n" -gt 0 ] && echo sim || echo nao)" >> "$GITHUB_OUTPUT"
+
   enviar:
-    # agendado só com ENVIO_LIGADO=sim; disparo manual (bot/GitHub) sempre roda
-    if: github.event_name == 'workflow_dispatch' || vars.ENVIO_LIGADO == 'sim'
+    needs: guarda
+    # disparo manual (bot/GitHub) sempre roda; agendado só com ENVIO_LIGADO=sim e se o bot não enviou hoje
+    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || (vars.ENVIO_LIGADO == 'sim' && needs.guarda.outputs.ja_enviou == 'nao')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 350
     steps:

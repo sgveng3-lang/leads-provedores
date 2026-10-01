@@ -220,18 +220,80 @@ async function comandoEnvio(args, quem) {
 
 // avisa no grupo o resultado de cada envio que terminar (automático ou pedido)
 async function acompanharEnvio() {
-  const [ultima] = await gh.ultimasExecucoes(1, gh.ENVIO);
-  if (!ultima || ultima.status !== 'completed' || ultima.id <= (estado.ultimoEnvioVisto || 0)) return;
+  const novas = (await gh.ultimasExecucoes(5, gh.ENVIO))
+    .filter((r) => r.id > (estado.ultimoEnvioVisto || 0))
+    .sort((a, b) => a.id - b.id);
+  // para na primeira ainda rodando: o aviso dela não pode se perder atrás de uma mais nova
+  const prontas = [];
+  for (const r of novas) {
+    if (r.status !== 'completed') break;
+    prontas.push(r);
+  }
+  if (!prontas.length) return;
   const primeiraVez = !estado.ultimoEnvioVisto;
-  estado.ultimoEnvioVisto = ultima.id;
+  estado.ultimoEnvioVisto = prontas[prontas.length - 1].id;
   salvarEstado(estado);
   if (primeiraVez && !estado.envioAvisar) return; // não repete envio antigo ao ligar o bot
   estado.envioAvisar = false;
   salvarEstado(estado);
-  const r = await gh.resumo(ultima.id, 'resumo-envio').catch(() => null);
-  if (!r) return avisar(`⚠️ Um envio de e-mails terminou (${ultima.conclusion}), sem resumo.`);
-  return avisar(`📧 Envio ${r.teste ? 'de TESTE ' : ''}concluído: *${r.enviados}* enviados, ${r.falhas} falha(s)` +
-    (r.repetidos ? `, ${r.repetidos} endereço(s) repetido(s) pulado(s)` : '') + '.');
+  for (const run of prontas) {
+    const r = await gh.resumo(run.id, 'resumo-envio').catch(() => null);
+    if (!r) {
+      // sem resumo e sem falha = agendamento de reserva que não precisou enviar
+      if (run.conclusion === 'failure') await avisar(`⚠️ Um envio de e-mails falhou antes de terminar. Veja em GitHub > leads-provedores > Actions.`);
+      continue;
+    }
+    await avisar(`📧 Envio ${r.teste ? 'de TESTE ' : ''}concluído: *${r.enviados}* enviados, ${r.falhas} falha(s)` +
+      (r.repetidos ? `, ${r.repetidos} endereço(s) repetido(s) pulado(s)` : '') + '.');
+  }
+}
+
+// ---------------- envio diário às 09:00 ----------------
+// O agendamento do GitHub atrasa horas, então quem dispara o envio do dia é o bot.
+// Dias úteis a partir das 09:00; se o bot estava fora, dispara quando voltar, mas
+// só até as 16:00. O cron do GitHub (11:00) fica de reserva e pula sozinho se o
+// envio "diario" já rodou.
+const ENVIO_DESDE = 9;
+const ENVIO_ATE = 16;
+let conferindoEnvio = false;
+
+function agoraBR() {
+  const p = Object.fromEntries(
+    new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/Sao_Paulo', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', hourCycle: 'h23', weekday: 'short',
+    }).formatToParts(new Date()).map((x) => [x.type, x.value]),
+  );
+  return { dia: `${p.year}-${p.month}-${p.day}`, hora: Number(p.hour), util: !['Sat', 'Sun'].includes(p.weekday) };
+}
+const diaBR = (iso) => new Date(iso).toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' });
+
+async function envioDiario() {
+  const { dia, hora, util } = agoraBR();
+  if (!util || hora < ENVIO_DESDE || hora >= ENVIO_ATE || estado.envioDiarioDia === dia || conferindoEnvio) return;
+  conferindoEnvio = true;
+  try {
+    if ((await gh.lerVariavel('ENVIO_LIGADO')) !== 'sim') return; // desligado: confere de novo no próximo minuto
+    const hoje = (await gh.ultimasExecucoes(10, gh.ENVIO)).filter((r) => diaBR(r.created_at) === dia);
+    if (hoje.some((r) => r.event === 'schedule' && r.status !== 'completed')) return; // reserva decidindo agora: confere no próximo minuto
+    let jaEnviou = hoje.some((r) => (r.display_title || '').endsWith('diario'));
+    for (const r of hoje.filter((x) => x.event === 'schedule')) {
+      if (!jaEnviou && (await gh.resumo(r.id, 'resumo-envio').catch(() => null))) jaEnviou = true; // a reserva já enviou
+    }
+    let limite = null;
+    if (!jaEnviou) {
+      limite = (await gh.lerVariavel('ENVIO_LIMITE')) || 15;
+      await gh.dispararEnvio({ limite, origem: 'diario' });
+      estado.envioAvisar = true;
+    }
+    estado.envioDiarioDia = dia;
+    salvarEstado(estado);
+    if (limite) {
+      agendar(COM_EXECUCAO_MS);
+      await avisar(`📨 Envio do dia começou: ${limite} e-mail(s), um a cada 8–15 min. Aviso quando terminar.`);
+    }
+  } finally {
+    conferindoEnvio = false;
+  }
 }
 
 // ---------------- posts de vídeo ----------------
@@ -435,4 +497,5 @@ async function prepararGrupo() {
 
 await prepararGrupo();
 agendar(10_000);
+setInterval(() => envioDiario().catch((e) => log.erro('envio diário', e.message)), 60_000);
 log.info('bot no ar');

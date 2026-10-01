@@ -41,10 +41,10 @@ export async function ultimasExecucoes(quantidade = 5, workflow = WORKFLOW, repo
 // ---------- envio de e-mails (workflow enviar.yml) ----------
 export const ENVIO = 'enviar.yml';
 
-export async function dispararEnvio({ limite, testePara = '' }) {
+export async function dispararEnvio({ limite, testePara = '', origem = 'manual' }) {
   await gh(`/actions/workflows/${ENVIO}/dispatches`, {
     method: 'POST',
-    body: JSON.stringify({ ref: 'main', inputs: { limite: String(limite), teste_para: testePara } }),
+    body: JSON.stringify({ ref: 'main', inputs: { limite: String(limite), teste_para: testePara, origem } }),
   });
 }
 
