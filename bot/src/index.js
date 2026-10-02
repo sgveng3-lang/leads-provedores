@@ -46,6 +46,8 @@ const AJUDA =
   '*posts horario 10-22* — janela de horário (as duas)\n' +
   '*posts intervalo 10h* — tempo mínimo entre posts da mesma rede\n' +
   '*posts ordem intercalada|numerica|alfabetica*\n' +
+  '*posts fds desligar* / *posts fds ligar* — posts no sábado e domingo\n' +
+  '*posts fds hoje* — com o fim de semana desligado, libera só hoje (sábado/domingo)\n' +
   '*posts tiktok retomar* — tira a pausa (depois de renovar os cookies)\n\n' +
   '*ajuda* — esta mensagem\n' +
   'Raspagem automática: último dia do mês às 06:00.\n' +
@@ -306,11 +308,16 @@ async function agendamentos() {
 // posta (sorteio, janela, intervalo, posts por dia). Se o cron do GitHub já rodou
 // nesta hora, o bot não repete.
 async function postsDaHora() {
-  const { dia, hora, minuto } = agoraBR();
+  const { dia, hora, minuto, util } = agoraBR();
   const chave = `${dia} ${hora}`;
   if (hora < POSTS_DESDE || hora >= POSTS_ATE || minuto < POSTS_MINUTO || estado.postsHora === chave) return;
   const [tt, ig] = await Promise.all([gh.lerVariavel('TIKTOK_LIGADO', PR()), gh.lerVariavel('INSTAGRAM_LIGADO', PR())]);
-  if (tt === 'sim' || ig === 'sim') {
+  let bloqueado = false;
+  if (!util) {
+    const [fds, liberado] = await Promise.all([gh.lerVariavel('POSTS_FDS', PR()), gh.lerVariavel('POSTS_FDS_LIBERADO', PR())]);
+    bloqueado = fdsBloqueado({ POSTS_FDS: fds || 'sim', POSTS_FDS_LIBERADO: liberado || '' }, { dia, util });
+  }
+  if ((tt === 'sim' || ig === 'sim') && !bloqueado) {
     const nestaHora = (await gh.ultimasExecucoes(5, gh.POSTAR, PR())).some((r) => {
       const t = agoraBR(new Date(r.created_at));
       return t.dia === dia && t.hora === hora;
@@ -423,7 +430,10 @@ const NOME_IG = { normal: 'Reel normal', teste: 'Reel de teste', ambos: 'teste +
 const PADRAO_POSTS = {
   TIKTOK_LIGADO: 'nao', INSTAGRAM_LIGADO: 'nao', TIKTOK_POR_DIA: '2', INSTAGRAM_POR_DIA: '2',
   POSTS_JANELA: '10-22', POSTS_INTERVALO_MIN: '90', POSTS_ORDEM: 'intercalada', IG_MODO: 'normal',
+  POSTS_FDS: 'sim', POSTS_FDS_LIBERADO: '',
 };
+// sábado/domingo com o fim de semana desligado e sem "posts fds hoje": não posta
+const fdsBloqueado = (v, { dia, util }) => !util && v.POSTS_FDS !== 'sim' && v.POSTS_FDS_LIBERADO !== dia;
 const horaBR = (iso) => new Date(iso).toLocaleTimeString('pt-BR', { timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit' });
 const semAcento = (t) => (t || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
 
@@ -454,7 +464,10 @@ async function statusPosts() {
     }
     if (pausa) texto += `\n(${pausa.motivo}) — renove e mande *posts ${rede} retomar*`;
   }
-  texto += `\n\n🕐 Entre ${v.POSTS_JANELA.replace('-', 'h e ')}h (horário sorteado) · mínimo de ${formatarIntervalo(v.POSTS_INTERVALO_MIN)} entre posts da mesma rede · ordem ${v.POSTS_ORDEM}`;
+  const hoje = agoraBR();
+  texto += `\n\n📅 Fim de semana: ${v.POSTS_FDS === 'sim' ? '🟢 posta' : '🔴 não posta'}` +
+    (v.POSTS_FDS !== 'sim' && !hoje.util && v.POSTS_FDS_LIBERADO === hoje.dia ? ' (hoje liberado)' : '');
+  texto += `\n🕐 Entre ${v.POSTS_JANELA.replace('-', 'h e ')}h (horário sorteado) · mínimo de ${formatarIntervalo(v.POSTS_INTERVALO_MIN)} entre posts da mesma rede · ordem ${v.POSTS_ORDEM}`;
   texto += f && f.ok ? `\n📂 Fila no Drive: ${f.fila} vídeo(s)` : '\n📂 Fila: não consegui consultar o Drive (variável FILA_STATUS_URL configurada?)';
   return avisar(texto);
 }
@@ -514,6 +527,24 @@ async function comandoPosts(args) {
     return postarAgora(rede);
   }
   if (sub === 'retomar') return comandoRede(semAcento(args[1]) || 'tiktok', ['retomar']);
+  if (sub === 'fds' || sub === 'fimdesemana') {
+    const acao = semAcento(args[1]);
+    if (acao === 'ligar' || acao === 'desligar') {
+      await gravar('POSTS_FDS', acao === 'ligar' ? 'sim' : 'nao');
+      return avisar(acao === 'ligar' ? '🟢 Posts no fim de semana LIGADOS (sábado e domingo postam normalmente).'
+        : '🔴 Posts no fim de semana DESLIGADOS. Num sábado ou domingo, mande *posts fds hoje* pra liberar só aquele dia.');
+    }
+    if (acao === 'hoje') {
+      const hoje = agoraBR();
+      if (hoje.util) return avisar('⚠️ *posts fds hoje* só vale no sábado ou no domingo.');
+      if (((await gh.lerVariavel('POSTS_FDS', PR())) || 'sim') === 'sim') {
+        return avisar('O fim de semana já está ligado: os posts de hoje saem normalmente.');
+      }
+      await gravar('POSTS_FDS_LIBERADO', hoje.dia);
+      return avisar(`✅ Posts liberados só hoje (${hoje.dia.split('-').reverse().join('/')}), no horário sorteado de sempre. Amanhã volta a regra do fim de semana desligado.`);
+    }
+    return avisar('Ex.: *posts fds desligar*, *posts fds ligar* ou, num sábado/domingo, *posts fds hoje*');
+  }
   if (sub === 'horario') {
     const m = (args[1] || '').match(/^(\d{1,2})-(\d{1,2})$/);
     if (!m || +m[1] >= +m[2] || +m[1] < 10 || +m[2] > 22) return avisar('Ex.: *posts horario 10-22* (o agendamento roda entre 10h e 22h)');
@@ -538,7 +569,7 @@ async function comandoPosts(args) {
     return avisar(`✅ Ordem: ${ordem}.`);
   }
   return avisar('Opções: *posts*, *posts tiktok ligar/desligar*, *posts instagram ligar/desligar*, *posts ligar/desligar* (as duas), ' +
-    '*posts agora*, *posts tiktok por dia N*, *posts instagram normal|teste|ambos*, *posts horario 10-22*, *posts intervalo 10h*, *posts ordem ...*, *posts tiktok retomar*');
+    '*posts agora*, *posts tiktok por dia N*, *posts instagram normal|teste|ambos*, *posts horario 10-22*, *posts intervalo 10h*, *posts ordem ...*, *posts fds ligar/desligar/hoje*, *posts tiktok retomar*');
 }
 
 // avisa no grupo cada execução que postou (ou falhou); as que só "não sortearam" ficam quietas
