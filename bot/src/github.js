@@ -38,6 +38,16 @@ export async function ultimasExecucoes(quantidade = 5, workflow = WORKFLOW, repo
   return (await r.json()).workflow_runs || [];
 }
 
+// ---------- filtro fiscal da aba alvo (workflow filtrar.yml) ----------
+export const FILTRAR = 'filtrar.yml';
+
+export async function dispararFiltro(pedido) {
+  await gh(`/actions/workflows/${FILTRAR}/dispatches`, {
+    method: 'POST',
+    body: JSON.stringify({ ref: 'main', inputs: { pedido } }),
+  });
+}
+
 // ---------- envio de e-mails (workflow enviar.yml) ----------
 export const ENVIO = 'enviar.yml';
 

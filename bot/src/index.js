@@ -27,6 +27,8 @@ const AJUDA =
   '*status* — andamento da raspagem\n' +
   '*cancelar* — cancela a raspagem em andamento\n' +
   '*planilha* — link da planilha\n\n' +
+  '🎯 *Aba alvo* (provedores pequenos x Dívida Ativa)\n' +
+  '*filtrar* — refaz a aba alvo agora (leva ~30 min)\n\n' +
   '📧 *E-mails de prospecção*\n' +
   '*envio* — situação do envio\n' +
   '*envio ligar* / *envio desligar* — envio automático (dias úteis 09:00)\n' +
@@ -46,7 +48,8 @@ const AJUDA =
   '*posts ordem intercalada|numerica|alfabetica*\n' +
   '*posts tiktok retomar* — tira a pausa (depois de renovar os cookies)\n\n' +
   '*ajuda* — esta mensagem\n' +
-  'Raspagem automática: último dia do mês às 06:00.';
+  'Raspagem automática: último dia do mês às 06:00.\n' +
+  'Filtro da aba alvo: dia 1º às 06:00.';
 
 const agora = () => Math.floor(Date.now() / 1000);
 const minutos = (desde) => Math.round((agora() - desde) / 60);
@@ -78,6 +81,7 @@ function agendar(ms) {
 async function ciclo() {
   await acompanharEnvio().catch((e) => log.erro('envio', e.message));
   await acompanharPosts().catch((e) => log.erro('posts', e.message));
+  await acompanharFiltro().catch((e) => log.erro('filtro', e.message));
   if (estado.execucao) {
     const run = await gh.execucao(estado.execucao.runId);
     if (run.status !== 'completed') return;
@@ -149,6 +153,14 @@ async function comando(texto, quem) {
         `⏳ Raspagem ${estado.execucao.pedido} rodando há ${minutos(estado.execucao.inicio)} min\n` +
           `UFs concluídas: ${p.concluidas}/${p.total || '?'}` + (p.falhas.length ? `\nFalhas: ${p.falhas.join(', ')}` : ''),
       );
+    }
+
+    case 'filtrar': {
+      const rodando = (await gh.ultimasExecucoes(5, gh.FILTRAR)).find((r) => r.status !== 'completed');
+      if (rodando) return avisar('⏳ O filtro da aba alvo já está rodando. Aviso aqui quando terminar.');
+      await gh.dispararFiltro(`wa-${new Date().toISOString().slice(0, 16).replace(/[-:T]/g, '')}`);
+      agendar(COM_EXECUCAO_MS);
+      return avisar('🎯 Filtro da aba alvo disparado (PGFN + dados dos CNPJs, ~30 min). Aviso aqui quando terminar.');
     }
 
     case 'envio':
@@ -259,6 +271,8 @@ const POSTS_ATE = 22;
 const POSTS_MINUTO = 7;
 const RASPAR_DESDE = 6; // raspagem: último dia do mês 06:00; se o bot estava fora, até 18:00
 const RASPAR_ATE = 18;
+const FILTRAR_DESDE = 6; // filtro da aba alvo: dia 1º 06:00; se o bot estava fora, até 18:00
+const FILTRAR_ATE = 18;
 let rodandoAgenda = false;
 
 function agoraBR(data = new Date()) {
@@ -282,6 +296,7 @@ async function agendamentos() {
     await envioDiario().catch((e) => log.erro('envio diário', e.message));
     await postsDaHora().catch((e) => log.erro('posts da hora', e.message));
     await raspagemMensal().catch((e) => log.erro('raspagem mensal', e.message));
+    await filtroMensal().catch((e) => log.erro('filtro mensal', e.message));
   } finally {
     rodandoAgenda = false;
   }
@@ -332,6 +347,46 @@ async function raspagemMensal() {
   estado.ultimoRunVisto = Math.max(estado.ultimoRunVisto, run.id);
   salvarEstado(estado);
   agendar(COM_EXECUCAO_MS);
+}
+
+// Filtro da aba alvo: 1x por mês, no dia 1º (depois da raspagem do último dia);
+// o cron do GitHub (dia 1º, 12:00) é reserva e pula se a "mensal-bot" já rodou.
+async function filtroMensal() {
+  const { dia, hora } = agoraBR();
+  if (!dia.endsWith('-01') || hora < FILTRAR_DESDE || hora >= FILTRAR_ATE || estado.filtroDia === dia) return;
+  const jaHoje = (await gh.ultimasExecucoes(10, gh.FILTRAR)).some((r) => diaBR(r.created_at) === dia);
+  estado.filtroDia = dia;
+  salvarEstado(estado);
+  if (jaHoje) return; // alguém já filtrou hoje pelo grupo/site
+  await gh.dispararFiltro('mensal-bot');
+  agendar(COM_EXECUCAO_MS);
+  await avisar('🎯 Filtro mensal da aba alvo começou (PGFN + dados dos CNPJs, ~30 min). Aviso aqui quando terminar.');
+}
+
+// Avisa no grupo quando uma execução do filtro termina (do bot, do grupo ou da reserva).
+async function acompanharFiltro() {
+  const novas = (await gh.ultimasExecucoes(5, gh.FILTRAR))
+    .filter((r) => r.id > (estado.ultimoFiltroVisto || 0))
+    .sort((a, b) => a.id - b.id);
+  for (const r of novas) {
+    if (r.status !== 'completed') break; // o aviso desta não pode se perder atrás de uma mais nova
+    estado.ultimoFiltroVisto = r.id;
+    salvarEstado(estado);
+    if (r.conclusion === 'skipped' || r.conclusion === 'cancelled') continue;
+    const res = await gh.resumo(r.id, 'resumo-filtro').catch(() => null);
+    if (!res || !res.gravado) {
+      if (r.conclusion === 'success' && !res) continue; // reserva que pulou (bot já tinha filtrado)
+      await avisar(`⚠️ O filtro da aba alvo terminou sem gravar (${r.conclusion}). Mande *filtrar* pra tentar de novo.`);
+      continue;
+    }
+    const p = res.perfis || {};
+    await avisar(
+      `🎯 Aba alvo atualizada: *${res.alvo}* provedores (PGFN ${String(res.pgfn).replace(/_trimestre_0/g, '-T')})\n` +
+        `Pagando: ${p['Pagando'] || 0} · Já quitou: ${p['Já quitou'] || 0} · Pagando em parte: ${p['Pagando em parte'] || 0}\n` +
+        `Devendo: ${p['Devendo'] || 0} · Na Justiça: ${p['Devendo na Justiça'] || 0} · Em discussão: ${p['Em discussão'] || 0}\n` +
+        `(${res.duracao_min} min)`,
+    );
+  }
 }
 
 async function envioDiario() {
