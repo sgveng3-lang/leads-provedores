@@ -183,6 +183,20 @@ function gravarAlvo_(cabecalho, linhas, formatos) {
   const planilha = SpreadsheetApp.getActiveSpreadsheet();
   let aba = planilha.getSheetByName(ABA_ALVO);
   if (!aba) aba = planilha.insertSheet(ABA_ALVO);
+  // "E-mails do site" vem da aba Provedores (pelo CNPJ), logo após "E-mail (Receita)"
+  if (!cabecalho.includes('E-mails do site')) {
+    const prov = aba_(ABA_PROVEDORES, COLUNAS);
+    const n = prov.getLastRow() - 1;
+    const porCnpj = {};
+    if (n > 0) {
+      const iSite = COLUNAS.indexOf('E-mails do site');
+      prov.getRange(2, 1, n, COLUNAS.length).getDisplayValues().forEach((l) => { porCnpj[l[0]] = l[iSite]; });
+    }
+    let pos = cabecalho.indexOf('E-mail (Receita)') + 1;
+    if (pos === 0) pos = cabecalho.length;
+    cabecalho = cabecalho.slice(0, pos).concat(['E-mails do site'], cabecalho.slice(pos));
+    linhas = linhas.map((l) => l.slice(0, pos).concat([porCnpj[String(l[0])] || ''], l.slice(pos)));
+  }
   if (aba.getFilter()) aba.getFilter().remove();
   aba.clear();
   aba.getRange(1, 1, 1, cabecalho.length).setValues([cabecalho]).setFontWeight('bold');
