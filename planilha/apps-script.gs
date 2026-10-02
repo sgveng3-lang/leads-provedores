@@ -16,6 +16,7 @@
 
 const ABA_PROVEDORES = 'Provedores';
 const ABA_EXECUCOES = 'Execuções';
+const ABA_ALVO = 'alvo';
 
 const COLUNAS = [
   'CNPJ', 'Empresa (Anatel)', 'Nome fantasia', 'Grupo econômico', 'Porte',
@@ -72,6 +73,7 @@ function doPost(e) {
     if (corpo.acao === 'execucao') return json_(registrarExecucao_(corpo.execucao || {}));
     if (corpo.acao === 'cnpjs') return json_({ ok: true, cnpjs: cnpjsExistentes_() });
     if (corpo.acao === 'pendentes') return json_(pendentes_(corpo.quantidade || 20));
+    if (corpo.acao === 'aba_alvo') return json_(gravarAlvo_(corpo.cabecalho || [], corpo.linhas || [], corpo.formatos || {}));
     if (corpo.acao === 'marcar_enviado') return json_(marcarEnviado_(corpo.cnpj, corpo.para, corpo.status));
     return json_({ ok: false, erro: 'ação desconhecida' });
   } catch (erro) {
@@ -172,6 +174,33 @@ function pendentes_(quantidade) {
   // assinatura do descadastro só pros escolhidos (calcular pra milhares estoura o tempo do Google)
   leads.forEach((lead) => { lead.sair = assinatura_(lead.cnpj); });
   return { ok: true, leads: leads, enviados: Array.from(new Set(enviados)) };
+}
+
+// Aba "alvo": provedores pequenos cruzados com a Dívida Ativa da União (PGFN).
+// É recriada inteira a cada gravação (só esta aba; Provedores e Execuções não são tocadas).
+// formatos = { "<índice da coluna>": "<formato de número>" }
+function gravarAlvo_(cabecalho, linhas, formatos) {
+  const planilha = SpreadsheetApp.getActiveSpreadsheet();
+  let aba = planilha.getSheetByName(ABA_ALVO);
+  if (!aba) aba = planilha.insertSheet(ABA_ALVO);
+  if (aba.getFilter()) aba.getFilter().remove();
+  aba.clear();
+  aba.getRange(1, 1, 1, cabecalho.length).setValues([cabecalho]).setFontWeight('bold');
+  aba.setFrozenRows(1);
+  if (linhas.length) {
+    const dados = aba.getRange(2, 1, linhas.length, cabecalho.length);
+    aba.getRange(2, 1, linhas.length, 1).setNumberFormat('@'); // CNPJ como texto
+    dados.setValues(linhas);
+    Object.keys(formatos).forEach((k) => aba.getRange(2, Number(k) + 1, linhas.length, 1).setNumberFormat(formatos[k]));
+    const iPrio = cabecalho.indexOf('Prioridade');
+    if (iPrio >= 0) {
+      const cores = { 'Alta': '#c6efce', 'Média': '#ffeb9c', 'Baixa': '#f2dcdb' };
+      aba.getRange(2, iPrio + 1, linhas.length, 1).setBackgrounds(linhas.map((l) => [cores[l[iPrio]] || null]));
+    }
+  }
+  aba.getRange(1, 1, linhas.length + 1, cabecalho.length).createFilter();
+  aba.autoResizeColumns(1, cabecalho.length);
+  return { ok: true, linhas: linhas.length };
 }
 
 function marcarEnviado_(cnpj, para, status) {
