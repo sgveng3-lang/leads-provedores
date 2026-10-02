@@ -92,7 +92,6 @@ def montar(lead, remetente, url_planilha):
     nome = nome_do_provedor(lead)
     acessos = int(lead.get("acessos") or 0)
     base = f"cerca de {acessos:,}".replace(",", ".") + " assinantes" if acessos >= 100 else "seus assinantes"
-    sair = f"{url_planilha}?{urlencode({'sair': lead['cnpj'], 't': lead['sair']})}"
     assunto = f"SVA pra {nome}: menos imposto e mais receita por assinante"
     texto = f"""Olá, equipe da {nome}!
 
@@ -110,13 +109,9 @@ Se fizer sentido, é só responder este e-mail que eu explico em 15 minutos.
 
 {remetente}
 SepiaStream — {FLYER}
-
---
-Você recebeu este e-mail porque este endereço aparece como contato público da {nome} (cadastro do CNPJ ou site). Não quer receber mais? {sair}
 """
     html = texto.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     html = html.replace(FLYER, f'<a href="{FLYER}">{FLYER.replace("https://", "")}</a>')
-    html = html.replace(sair.replace("&", "&amp;"), f'<a href="{sair}">descadastrar</a>')
     html = "<div style='font-family:Arial,sans-serif;font-size:14px;line-height:1.5'>" + html.replace("\n", "<br>") + "</div>"
     return assunto, texto, html
 
