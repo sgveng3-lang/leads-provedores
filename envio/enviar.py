@@ -37,6 +37,7 @@ from planilha import Planilha  # noqa: E402
 from zoho import EnvioRecusado, ZohoMail  # noqa: E402
 
 FLYER = "https://flyer.sepiastream.com"
+ABA = "alvo"  # aba da planilha de onde sai a fila e onde o envio é marcado
 ANEXO_PADRAO = Path(__file__).resolve().parent / "anexos" / "SepiaStream_SVA_Provedores.pdf"
 
 # prioridade de e-mail: institucional do site (comercial/contato...) > Receita
@@ -74,7 +75,11 @@ def escolher_email(lead):
 
 def nome_do_provedor(lead):
     nome = (lead.get("fantasia") or lead.get("empresa") or "").strip()
-    nome = re.sub(r"\s+(LTDA|EIRELI|ME|EPP|S/?A)\.?(\s*-\s*ME)?$", "", nome, flags=re.I)
+    # tira terminações jurídicas, inclusive compostas ("LTDA - EPP", "EIRELI - ME")
+    anterior = None
+    while anterior != nome:
+        anterior = nome
+        nome = re.sub(r"[\s,.-]+(LTDA|EIRELI|ME|EPP|S/?A)\.?$", "", nome, flags=re.I).rstrip(" -.,")
     return nome.title() if nome.isupper() else nome
 
 
@@ -88,13 +93,14 @@ def montar(lead, remetente, url_planilha):
     acessos = int(lead.get("acessos") or 0)
     base = f"cerca de {acessos:,}".replace(",", ".") + " assinantes" if acessos >= 100 else "seus assinantes"
     sair = f"{url_planilha}?{urlencode({'sair': lead['cnpj'], 't': lead['sair']})}"
-    assunto = f"SVA de streaming pra {nome} — R$ 2,00 por assinante"
+    assunto = f"SVA pra {nome}: menos imposto e mais receita por assinante"
     texto = f"""Olá, equipe da {nome}!
 
 Vi que vocês atendem {base} em {cidade(lead)} e queria apresentar o SepiaStream: um SVA de streaming (clássicos do cinema e animação) que o provedor inclui no plano por R$ 2,00 por licença.
 
+• Menos imposto: parte do valor do plano passa a ser SVA, que não entra na base do ICMS de telecomunicação. Com a composição certa entre internet e SVA, a carga tributária do provedor diminui (vale validar os números com o seu contador).
+• Mais receita: o SVA agrega valor ao plano, ajuda a subir o ticket médio e a segurar o assinante na base.
 • Zero infraestrutura do lado de vocês — o assinante assiste pelo navegador, no celular, TV ou computador.
-• Ajuda na composição do plano entre internet e SVA.
 • Ativação simples, por lista de assinantes.
 
 Segue em anexo nossa apresentação (PDF, 2 páginas). A versão online tem os pacotes e um simulador com os números do provedor:
@@ -129,7 +135,10 @@ def main():
 
     planilha = Planilha()
     # a planilha devolve os maiores primeiro; filtramos a faixa-alvo e os sem e-mail comercial aqui
-    resposta = planilha._post({"acao": "pendentes", "quantidade": 800})
+    # fila da aba "alvo" (provedor menor com dívida maior primeiro); as outras abas não são alteradas
+    resposta = planilha._post({"acao": "pendentes", "aba": ABA, "quantidade": 800})
+    if resposta.get("aba") != ABA:  # Apps Script antigo devolveria a aba Provedores: não envia nada
+        sys.exit("a planilha não devolveu a fila da aba alvo (Apps Script desatualizado?) — nada foi enviado")
     # "Enviado para" guarda "para; cc: a, b" — qualquer endereço ali já recebeu
     ja_usados = {e.lower() for texto in resposta.get("enviados", []) for e in re.findall(r"[\w.+-]+@[\w.-]+\.\w+", texto)}
     leads, repetidos = [], []
@@ -148,7 +157,7 @@ def main():
             break
     if not args.simular and not args.teste_para:
         for lead, email in repetidos:
-            planilha._post({"acao": "marcar_enviado", "cnpj": lead["cnpj"], "para": f"REPETIDO {email}", "status": "Endereço repetido"})
+            planilha._post({"acao": "marcar_enviado", "aba": ABA, "cnpj": lead["cnpj"], "para": f"REPETIDO {email}", "status": "Endereço repetido"})
     if repetidos:
         print(f"endereços repetidos (marcados sem enviar): {len(repetidos)}")
     remetente = os.environ.get("REMETENTE_NOME", "Equipe SepiaStream")
@@ -198,11 +207,11 @@ def main():
                     smtp.login(usuario, os.environ["SMTP_SENHA"])
                     smtp.send_message(msg)
             if not args.teste_para:
-                planilha._post({"acao": "marcar_enviado", "cnpj": lead["cnpj"],
+                planilha._post({"acao": "marcar_enviado", "aba": ABA, "cnpj": lead["cnpj"],
                                 "para": para + (f"; cc: {', '.join(cc)}" if cc else "")})
             enviados += 1
         except smtplib.SMTPRecipientsRefused:
-            planilha._post({"acao": "marcar_enviado", "cnpj": lead["cnpj"], "para": f"RECUSADO {para}"})
+            planilha._post({"acao": "marcar_enviado", "aba": ABA, "cnpj": lead["cnpj"], "para": f"RECUSADO {para}"})
             falhas += 1
         except (smtplib.SMTPException, OSError, EnvioRecusado, RuntimeError) as erro:
             # limite do provedor/autenticação/conexão: para o dia aqui (tenta de novo amanhã)
