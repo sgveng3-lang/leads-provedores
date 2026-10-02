@@ -95,12 +95,12 @@ def montar(lead, remetente, url_planilha):
     assunto = f"SVA pra {nome}: menos imposto e mais receita por assinante"
     texto = f"""Olá, equipe da {nome}!
 
-Vi que vocês atendem {base} em {cidade(lead)} e queria apresentar o SepiaStream: um SVA de streaming (clássicos do cinema e animação) que o provedor inclui no plano por R$ 2,00 por licença.
+Vi que vocês atendem {base} em {cidade(lead)} e queria apresentar o SepiaStream: um SVA de streaming (clássicos do cinema e animação) que o provedor inclui no plano por R$ 2,00 por licença. Isso significa:
 
-• Menos imposto: parte do valor do plano passa a ser SVA, que não entra na base do ICMS de telecomunicação. Com a composição certa entre internet e SVA, a carga tributária do provedor diminui (vale validar os números com o seu contador).
 • Mais receita: o SVA agrega valor ao plano, ajuda a subir o ticket médio e a segurar o assinante na base.
 • Zero infraestrutura do lado de vocês — o assinante assiste pelo navegador, no celular, TV ou computador.
 • Ativação simples, por lista de assinantes.
+• Menos imposto e mais receita: parte do valor do plano passa a ser SVA, que não entra na base do ICMS. Com a composição certa entre internet e SVA, diminui o imposto e aumenta a receita do provedor (mostre ao seu contador e veja o que ele acha).
 
 Segue em anexo nossa apresentação (PDF, 2 páginas). A versão online tem os pacotes e um simulador com os números do provedor:
 {FLYER}
