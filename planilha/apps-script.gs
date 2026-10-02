@@ -50,11 +50,17 @@ function descadastrar_(cnpj, t) {
   const lock = LockService.getScriptLock();
   lock.waitLock(30000);
   try {
-    const aba = aba_(ABA_PROVEDORES, COLUNAS);
-    const n = aba.getLastRow() - 1;
-    const cnpjs = n > 0 ? aba.getRange(2, 1, n, 1).getDisplayValues() : [];
-    const i = cnpjs.findIndex((l) => l[0] === cnpj);
-    if (i >= 0) aba.getRange(i + 2, COLUNAS.indexOf('Status') + 1).setValue('Descadastrado');
+    const alvo = lerAba_(ABA_ALVO);
+    const ia = alvo.linhas.findIndex((l) => l[0] === cnpj);
+    if (ia >= 0) {
+      alvo.aba.getRange(ia + 2, alvo.cab.indexOf('Status') + 1).setValue('Descadastrado');
+    } else { // e-mails antigos, enviados pela aba Provedores
+      const aba = aba_(ABA_PROVEDORES, COLUNAS);
+      const n = aba.getLastRow() - 1;
+      const cnpjs = n > 0 ? aba.getRange(2, 1, n, 1).getDisplayValues() : [];
+      const i = cnpjs.findIndex((l) => l[0] === cnpj);
+      if (i >= 0) aba.getRange(i + 2, COLUNAS.indexOf('Status') + 1).setValue('Descadastrado');
+    }
   } finally {
     lock.releaseLock();
   }
@@ -72,9 +78,10 @@ function doPost(e) {
     if (corpo.acao === 'upsert') return json_(upsert_(corpo.linhas || []));
     if (corpo.acao === 'execucao') return json_(registrarExecucao_(corpo.execucao || {}));
     if (corpo.acao === 'cnpjs') return json_({ ok: true, cnpjs: cnpjsExistentes_() });
-    if (corpo.acao === 'pendentes') return json_(pendentes_(corpo.quantidade || 20));
+    if (corpo.acao === 'pendentes') return json_(corpo.aba === ABA_ALVO ? pendentesAlvo_(corpo.quantidade || 20) : pendentes_(corpo.quantidade || 20));
+    if (corpo.acao === 'coluna_alvo') return json_(colunaAlvo_(corpo.nome, corpo.valores || {}));
     if (corpo.acao === 'aba_alvo') return json_(gravarAlvo_(corpo.cabecalho || [], corpo.linhas || [], corpo.formatos || {}));
-    if (corpo.acao === 'marcar_enviado') return json_(marcarEnviado_(corpo.cnpj, corpo.para, corpo.status));
+    if (corpo.acao === 'marcar_enviado') return json_(corpo.aba === ABA_ALVO ? marcarEnviadoAlvo_(corpo.cnpj, corpo.para, corpo.status) : marcarEnviado_(corpo.cnpj, corpo.para, corpo.status));
     return json_({ ok: false, erro: 'ação desconhecida' });
   } catch (erro) {
     return json_({ ok: false, erro: String(erro) });
@@ -177,34 +184,65 @@ function pendentes_(quantidade) {
 }
 
 // Aba "alvo": provedores pequenos cruzados com a Dívida Ativa da União (PGFN).
-// É recriada inteira a cada gravação (só esta aba; Provedores e Execuções não são tocadas).
+// É recriada a cada gravação, mas as colunas de controle (CONTROLE_ALVO) são
+// preservadas por CNPJ. É dela que sai a fila do envio de e-mails.
+// As abas Provedores e Execuções só são LIDAS aqui, nunca alteradas.
 // formatos = { "<índice da coluna>": "<formato de número>" }
+const CONTROLE_ALVO = ['Status', 'Observações', 'Enviado em', 'Enviado para', 'Já enviado'];
+
+function lerAba_(nome) {
+  const aba = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(nome);
+  if (!aba || aba.getLastRow() < 2) return { aba: aba, cab: [], linhas: [] };
+  const valores = aba.getRange(1, 1, aba.getLastRow(), aba.getLastColumn()).getDisplayValues();
+  return { aba: aba, cab: valores[0], linhas: valores.slice(1) };
+}
+
 function gravarAlvo_(cabecalho, linhas, formatos) {
-  const planilha = SpreadsheetApp.getActiveSpreadsheet();
-  let aba = planilha.getSheetByName(ABA_ALVO);
-  if (!aba) aba = planilha.insertSheet(ABA_ALVO);
-  // "E-mails do site" vem da aba Provedores (pelo CNPJ), logo após "E-mail (Receita)"
+  // "E-mails do site" vem da aba Provedores (pelo CNPJ), logo após "E-mail (Receita)";
+  // de lá também vem quem já recebeu e-mail ou se descadastrou (só leitura)
+  const prov = lerAba_(ABA_PROVEDORES);
+  const pc = {};
+  prov.cab.forEach((c, i) => { pc[c] = i; });
+  const provPorCnpj = {};
+  prov.linhas.forEach((l) => { provPorCnpj[l[0]] = l; });
   if (!cabecalho.includes('E-mails do site')) {
-    const prov = aba_(ABA_PROVEDORES, COLUNAS);
-    const n = prov.getLastRow() - 1;
-    const porCnpj = {};
-    if (n > 0) {
-      const iSite = COLUNAS.indexOf('E-mails do site');
-      prov.getRange(2, 1, n, COLUNAS.length).getDisplayValues().forEach((l) => { porCnpj[l[0]] = l[iSite]; });
-    }
     let pos = cabecalho.indexOf('E-mail (Receita)') + 1;
     if (pos === 0) pos = cabecalho.length;
     cabecalho = cabecalho.slice(0, pos).concat(['E-mails do site'], cabecalho.slice(pos));
-    linhas = linhas.map((l) => l.slice(0, pos).concat([porCnpj[String(l[0])] || ''], l.slice(pos)));
+    linhas = linhas.map((l) => {
+      const p = provPorCnpj[String(l[0])];
+      return l.slice(0, pos).concat([p ? p[pc['E-mails do site']] : ''], l.slice(pos));
+    });
   }
+
+  // controle já existente na aba alvo (preservado)
+  const atual = lerAba_(ABA_ALVO);
+  const controlePorCnpj = {};
+  const ac = CONTROLE_ALVO.map((c) => atual.cab.indexOf(c));
+  if (ac.every((i) => i >= 0)) atual.linhas.forEach((l) => { controlePorCnpj[l[0]] = ac.map((i) => l[i]); });
+
+  linhas = linhas.map((l) => {
+    const cnpj = String(l[0]);
+    let ctrl = controlePorCnpj[cnpj];
+    if (!ctrl) {
+      const p = provPorCnpj[cnpj];
+      const jaRecebeu = !!p && (p[pc['Já enviado']] === 'SIM' || !!p[pc['Enviado em']]);
+      const descad = !!p && p[pc['Status']] === 'Descadastrado';
+      ctrl = [descad ? 'Descadastrado' : (jaRecebeu ? 'Enviado (aba Provedores)' : 'Novo'), '',
+        jaRecebeu ? p[pc['Enviado em']] : '', jaRecebeu ? p[pc['Enviado para']] : '', jaRecebeu ? 'SIM' : 'NÃO'];
+    }
+    return l.concat(ctrl);
+  });
+  cabecalho = cabecalho.concat(CONTROLE_ALVO);
+
+  const aba = atual.aba || SpreadsheetApp.getActiveSpreadsheet().insertSheet(ABA_ALVO);
   if (aba.getFilter()) aba.getFilter().remove();
   aba.clear();
   aba.getRange(1, 1, 1, cabecalho.length).setValues([cabecalho]).setFontWeight('bold');
   aba.setFrozenRows(1);
   if (linhas.length) {
-    const dados = aba.getRange(2, 1, linhas.length, cabecalho.length);
     aba.getRange(2, 1, linhas.length, 1).setNumberFormat('@'); // CNPJ como texto
-    dados.setValues(linhas);
+    aba.getRange(2, 1, linhas.length, cabecalho.length).setValues(linhas);
     Object.keys(formatos).forEach((k) => aba.getRange(2, Number(k) + 1, linhas.length, 1).setNumberFormat(formatos[k]));
     const iPrio = cabecalho.indexOf('Prioridade');
     if (iPrio >= 0) {
@@ -214,7 +252,100 @@ function gravarAlvo_(cabecalho, linhas, formatos) {
   }
   aba.getRange(1, 1, linhas.length + 1, cabecalho.length).createFilter();
   aba.autoResizeColumns(1, cabecalho.length);
-  return { ok: true, linhas: linhas.length };
+  return { ok: true, linhas: linhas.length, colunas: cabecalho.length };
+}
+
+// número de "R$ 1.234,56" / "2.885" / "1,234.56" / "1234.56" (a planilha exibe no formato do Brasil)
+function numero_(texto) {
+  let s = String(texto || '').replace(/[^\d,.-]/g, '');
+  const v = s.lastIndexOf(','), p = s.lastIndexOf('.');
+  if (v >= 0 && p >= 0) s = v > p ? s.replace(/\./g, '').replace(',', '.') : s.replace(/,/g, '');
+  else if (p >= 0 && /^-?\d{1,3}(\.\d{3})+$/.test(s)) s = s.replace(/\./g, '');
+  else if (v >= 0) s = /^-?\d{1,3}(,\d{3})+$/.test(s) ? s.replace(/,/g, '') : s.replace(',', '.');
+  return Number(s) || 0;
+}
+
+// Porte "Demais" na Receita (fora de ME/EPP) só entra no envio se for provedor de verdade:
+// até DEMAIS_MAX_ACESSOS acessos e atividade principal de telecomunicação (CNAE divisão 61).
+const DEMAIS_MAX_ACESSOS = 5000;
+function entraNoEnvio_(porte, acessos, cnae) {
+  if (porte !== 'Demais') return true;
+  return acessos <= DEMAIS_MAX_ACESSOS && /^61/.test(String(cnae || '').trim());
+}
+
+// Fila do envio a partir da aba alvo: provedor MENOR com dívida MAIOR primeiro
+// (dívida por assinante = dívida atual ÷ acessos; quem já quitou usa a dívida de 2024).
+function pendentesAlvo_(quantidade) {
+  const alvo = lerAba_(ABA_ALVO);
+  if (!alvo.linhas.length) return { ok: true, aba: ABA_ALVO, leads: [], enviados: [] };
+  const c = {};
+  alvo.cab.forEach((n, i) => { c[n] = i; });
+  // endereços que já receberam e-mail (aba alvo + aba Provedores, só leitura)
+  const prov = lerAba_(ABA_PROVEDORES);
+  const ep = prov.cab.indexOf('Enviado para');
+  const enviados = alvo.linhas.map((l) => l[c['Enviado para']])
+    .concat(ep >= 0 ? prov.linhas.map((l) => l[ep]) : [])
+    .map((e) => String(e || '').replace(/^RECUSADO\s+|^REPETIDO\s+/, '').toLowerCase())
+    .filter((e) => e.includes('@'));
+
+  const leads = alvo.linhas
+    .filter((l) => l[c['Já enviado']] !== 'SIM' && !l[c['Enviado em']] && ['', 'Novo'].includes(l[c['Status']])
+      && (l[c['E-mails do site']] || l[c['E-mail (Receita)']])
+      && entraNoEnvio_(l[c['Porte (Receita)']], numero_(l[c['Acessos']]), l[c['Atividade principal (CNAE)']]))
+    .map((l) => {
+      const acessos = numero_(l[c['Acessos']]);
+      const atual = ['Pagando (R$)', 'Em cobrança (R$)', 'Em cobrança na Justiça (R$)', 'Em discussão (R$)']
+        .reduce((s, n) => s + numero_(l[c[n]]), 0);
+      const divida = atual || numero_(l[c['Dívida em 2024 (R$)']]);
+      return {
+        cnpj: l[c['CNPJ']], empresa: l[c['Empresa (Anatel)']], fantasia: '', uf: l[c['UF']],
+        municipios: l[c['Municípios']], acessos: acessos,
+        emailReceita: l[c['E-mail (Receita)']], emailsSite: l[c['E-mails do site']],
+        _pontos: divida / Math.max(acessos, 1),
+      };
+    })
+    .sort((a, b) => b._pontos - a._pontos)
+    .slice(0, quantidade);
+  leads.forEach((lead) => { lead.sair = assinatura_(lead.cnpj); delete lead._pontos; });
+  return { ok: true, aba: ABA_ALVO, leads: leads, enviados: Array.from(new Set(enviados)) };
+}
+
+// Atualiza (ou cria, antes das colunas de controle) uma coluna de dados da aba alvo
+// pelo CNPJ, sem regravar o resto. valores = { "<CNPJ>": "<valor>" }
+function colunaAlvo_(nome, valores) {
+  if (!nome || CONTROLE_ALVO.includes(nome)) return { ok: false, erro: 'coluna inválida' };
+  const alvo = lerAba_(ABA_ALVO);
+  if (!alvo.aba || !alvo.linhas.length) return { ok: false, erro: 'aba alvo vazia' };
+  let j = alvo.cab.indexOf(nome);
+  if (j < 0) {
+    const antes = alvo.cab.indexOf(CONTROLE_ALVO[0]);
+    if (antes >= 0) { alvo.aba.insertColumnBefore(antes + 1); j = antes; } else j = alvo.cab.length;
+    alvo.aba.getRange(1, j + 1).setValue(nome).setFontWeight('bold');
+    if (alvo.aba.getFilter()) alvo.aba.getFilter().remove();
+    alvo.aba.getRange(1, 1, alvo.linhas.length + 1, alvo.cab.length + 1).createFilter();
+  }
+  const atuais = alvo.aba.getRange(2, j + 1, alvo.linhas.length, 1).getDisplayValues();
+  let n = 0;
+  const novos = alvo.linhas.map((l, i) => {
+    if (Object.prototype.hasOwnProperty.call(valores, l[0])) { n++; return [valores[l[0]]]; }
+    return [(atuais[i] || [''])[0]];
+  });
+  alvo.aba.getRange(2, j + 1, novos.length, 1).setValues(novos);
+  return { ok: true, atualizados: n };
+}
+
+function marcarEnviadoAlvo_(cnpj, para, status) {
+  const alvo = lerAba_(ABA_ALVO);
+  const i = alvo.linhas.findIndex((l) => l[0] === cnpj);
+  if (i < 0) return { ok: false, erro: 'cnpj não encontrado na aba alvo' };
+  const col = (n) => alvo.cab.indexOf(n) + 1;
+  const agora = Utilities.formatDate(new Date(), 'America/Sao_Paulo', 'yyyy-MM-dd HH:mm');
+  const linha = i + 2;
+  alvo.aba.getRange(linha, col('Status')).setValue(status || 'Enviado');
+  alvo.aba.getRange(linha, col('Já enviado')).setValue('SIM');
+  alvo.aba.getRange(linha, col('Enviado em')).setValue(agora);
+  alvo.aba.getRange(linha, col('Enviado para')).setValue(para || '');
+  return { ok: true };
 }
 
 function marcarEnviado_(cnpj, para, status) {
