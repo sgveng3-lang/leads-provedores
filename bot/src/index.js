@@ -8,9 +8,11 @@
 // raspagem, a cada 15 min (pra notar a raspagem mensal e os posts agendados).
 import { carregarEnv, lerEstado, log, salvarEstado } from './base.js';
 import * as gh from './github.js';
-import { acharGrupo, conectar, enviar, idsEnviadosPeloBot, textoDa } from './whatsapp.js';
+import { criarProspeccao } from './prospeccao.js';
+import { acharGrupo, conectar, enviar, idsEnviadosPeloBot, quandoProblemaGrave, textoDa } from './whatsapp.js';
 
 carregarEnv();
+carregarEnv('.env.planilha'); // PLANILHA_URL e PLANILHA_TOKEN (WhatsApp de prospecção)
 for (const v of ['WHATSAPP_NUMERO', 'WHATSAPP_GRUPO', 'GITHUB_TOKEN']) {
   if (!process.env[v]) throw new Error(`${v} não definido no .env`);
 }
@@ -35,6 +37,11 @@ const AJUDA =
   '*envio limite 20* — e-mails por dia (máx. 40)\n' +
   '*envio agora 5* — envia já N e-mails reais (máx. 15)\n' +
   '*envio teste fulano@email.com* — 2 e-mails de teste só pra esse endereço\n\n' +
+  '💬 *WhatsApp de prospecção* (quem já recebeu o e-mail)\n' +
+  '*whats* — situação\n' +
+  '*whats ligar* / *whats desligar* — automático (dias úteis 14:00–17:30)\n' +
+  '*whats limite 10* — mensagens por dia (máx. 15; começa com 5 e sobe sozinho)\n' +
+  '*whats teste 11999998888* — manda a mensagem de teste pra esse número\n\n' +
   '🎬 *Posts de vídeo* (TikTok e Instagram independentes)\n' +
   '*posts* — situação de cada rede e da fila no Drive\n' +
   '*posts tiktok ligar* / *desligar* — só o TikTok\n' +
@@ -168,6 +175,10 @@ async function comando(texto, quem) {
     case 'envio':
       return comandoEnvio(args, quem);
 
+    case 'whats':
+    case 'whatsapp':
+      return prospeccao.comando(args);
+
     case 'posts':
     case 'post':
       return comandoPosts(args);
@@ -299,6 +310,7 @@ async function agendamentos() {
     await postsDaHora().catch((e) => log.erro('posts da hora', e.message));
     await raspagemMensal().catch((e) => log.erro('raspagem mensal', e.message));
     await filtroMensal().catch((e) => log.erro('filtro mensal', e.message));
+    await prospeccao.tique().catch((e) => log.erro('whats', e.message));
   } finally {
     rodandoAgenda = false;
   }
@@ -609,12 +621,26 @@ async function acompanharPosts() {
 }
 
 // ---------------- início ----------------
+const prospeccao = criarProspeccao({ estado, salvarEstado, avisar, agoraBR });
+// conta banida/restrita/desconectada: desliga a prospecção na hora
+quandoProblemaGrave(async (motivo) => {
+  if ((await gh.lerVariavel('WHATS_LIGADO')) === 'sim') await prospeccao.frear(`o WhatsApp desconectou o bot: ${motivo}`);
+});
 const cliente = await conectar();
+
+const MIDIA = ['imageMessage', 'audioMessage', 'videoMessage', 'documentMessage', 'stickerMessage', 'contactMessage', 'locationMessage'];
 
 cliente.on('message', async (evento) => {
   try {
     const { key, message } = evento;
-    if (!key || !estado.grupoJid || key.remoteJid !== estado.grupoJid) return; // só o grupo
+    if (!key) return;
+    // conversa individual: pode ser resposta de um provedor que prospectamos
+    if (!key.isGroup && !key.isBroadcast && !key.isNewsletter && !key.fromMe) {
+      const texto = textoDa(message).trim();
+      if (texto || MIDIA.some((t) => message?.[t])) await prospeccao.mensagemRecebida(key, texto);
+      return;
+    }
+    if (!estado.grupoJid || key.remoteJid !== estado.grupoJid) return; // comandos: só o grupo
     if (idsEnviadosPeloBot.has(key.id)) return; // eco do próprio bot
     const texto = textoDa(message).trim();
     if (!texto || texto.length > 80) return;

@@ -82,6 +82,8 @@ function doPost(e) {
     if (corpo.acao === 'coluna_alvo') return json_(colunaAlvo_(corpo.nome, corpo.valores || {}));
     if (corpo.acao === 'aba_alvo') return json_(gravarAlvo_(corpo.cabecalho || [], corpo.linhas || [], corpo.formatos || {}));
     if (corpo.acao === 'contatos_alvo') return json_(contatosAlvo_());
+    if (corpo.acao === 'whats_pendentes') return json_(whatsPendentes_(corpo.quantidade || 15, corpo.diasUteis || 2));
+    if (corpo.acao === 'marcar_whats') return json_(marcarWhats_(corpo.cnpj, corpo.para, corpo.status, corpo.soStatus));
     if (corpo.acao === 'marcar_enviado') return json_(corpo.aba === ABA_ALVO ? marcarEnviadoAlvo_(corpo.cnpj, corpo.para, corpo.status) : marcarEnviado_(corpo.cnpj, corpo.para, corpo.status));
     return json_({ ok: false, erro: 'ação desconhecida' });
   } catch (erro) {
@@ -189,7 +191,9 @@ function pendentes_(quantidade) {
 // preservadas por CNPJ. É dela que sai a fila do envio de e-mails.
 // As abas Provedores e Execuções só são LIDAS aqui, nunca alteradas.
 // formatos = { "<índice da coluna>": "<formato de número>" }
-const CONTROLE_ALVO = ['Status', 'Observações', 'Enviado em', 'Enviado para', 'Já enviado'];
+// WhatsApp em / para / status: prospecção pelo WhatsApp do bot (só quem já recebeu o e-mail).
+const CONTROLE_ALVO = ['Status', 'Observações', 'Enviado em', 'Enviado para', 'Já enviado',
+  'WhatsApp em', 'WhatsApp para', 'WhatsApp status'];
 
 function lerAba_(nome) {
   const aba = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(nome);
@@ -220,7 +224,8 @@ function gravarAlvo_(cabecalho, linhas, formatos) {
   const atual = lerAba_(ABA_ALVO);
   const controlePorCnpj = {};
   const ac = CONTROLE_ALVO.map((c) => atual.cab.indexOf(c));
-  if (ac.every((i) => i >= 0)) atual.linhas.forEach((l) => { controlePorCnpj[l[0]] = ac.map((i) => l[i]); });
+  // basta o controle do e-mail existir; colunas de controle mais novas (WhatsApp) que faltem vêm vazias
+  if (ac.slice(0, 5).every((i) => i >= 0)) atual.linhas.forEach((l) => { controlePorCnpj[l[0]] = ac.map((i) => (i >= 0 ? l[i] : '')); });
 
   linhas = linhas.map((l) => {
     const cnpj = String(l[0]);
@@ -230,7 +235,7 @@ function gravarAlvo_(cabecalho, linhas, formatos) {
       const jaRecebeu = !!p && (p[pc['Já enviado']] === 'SIM' || !!p[pc['Enviado em']]);
       const descad = !!p && p[pc['Status']] === 'Descadastrado';
       ctrl = [descad ? 'Descadastrado' : (jaRecebeu ? 'Enviado (aba Provedores)' : 'Novo'), '',
-        jaRecebeu ? p[pc['Enviado em']] : '', jaRecebeu ? p[pc['Enviado para']] : '', jaRecebeu ? 'SIM' : 'NÃO'];
+        jaRecebeu ? p[pc['Enviado em']] : '', jaRecebeu ? p[pc['Enviado para']] : '', jaRecebeu ? 'SIM' : 'NÃO', '', '', ''];
     }
     return l.concat(ctrl);
   });
@@ -356,6 +361,83 @@ function colunaAlvo_(nome, valores) {
   });
   alvo.aba.getRange(2, j + 1, novos.length, 1).setValues(novos);
   return { ok: true, atualizados: n };
+}
+
+// ---------------- WhatsApp (bot) ----------------
+// Celulares de um texto livre: "(37) 9999-8888 / +55 37 99999-8888" → ["37999998888", ...].
+// A Receita ainda guarda celular no formato antigo (8 dígitos, sem o 9 na frente): acrescenta o 9.
+function celulares_(texto) {
+  return (String(texto || '').match(/\+?[\d()\s.-]{10,20}/g) || [])
+    .map((t) => t.replace(/\D/g, '').replace(/^55(?=\d{10,11}$)/, ''))
+    .map((n) => (n.length === 10 && /[6-9]/.test(n[2]) ? n.slice(0, 2) + '9' + n.slice(2) : n))
+    .filter((n) => n.length === 11 && n[2] === '9');
+}
+
+// dias úteis (seg–sex) entre "yyyy-MM-dd HH:mm" e hoje (hoje não conta)
+function diasUteisDesde_(texto) {
+  const m = String(texto || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return -1;
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  const hoje = new Date(Utilities.formatDate(new Date(), 'America/Sao_Paulo', "yyyy-MM-dd'T'00:00:00"));
+  let n = 0;
+  for (d.setDate(d.getDate() + 1); d < hoje; d.setDate(d.getDate() + 1)) if (d.getDay() % 6) n++;
+  return n;
+}
+
+// Fila do WhatsApp: quem recebeu o e-mail há pelo menos N dias úteis (endereço aceito),
+// segue com Status "Enviado" (você não mexeu), ainda não teve WhatsApp e tem celular.
+// Ordem dos celulares: WhatsApp do site, celular do site, celular da Receita. E-mail mais antigo primeiro.
+function whatsPendentes_(quantidade, diasUteis) {
+  const alvo = lerAba_(ABA_ALVO);
+  if (!alvo.linhas.length) return { ok: true, aba: ABA_ALVO, leads: [] };
+  const c = {};
+  alvo.cab.forEach((n, i) => { c[n] = i; });
+  const prov = lerAba_(ABA_PROVEDORES);
+  const pc = {};
+  prov.cab.forEach((n, i) => { pc[n] = i; });
+  const provPorCnpj = {};
+  prov.linhas.forEach((l) => { provPorCnpj[l[0]] = l; });
+  const campo = (l, mapa, nome) => (l && mapa[nome] !== undefined ? l[mapa[nome]] : '');
+  const leads = [];
+  alvo.linhas.forEach((l) => {
+    if (!['Enviado', 'Enviado (aba Provedores)'].includes(l[c['Status']])) return;
+    if (/^(RECUSADO|REPETIDO)\b/.test(String(l[c['Enviado para']] || ''))) return;
+    if (campo(l, c, 'WhatsApp status')) return;
+    if (diasUteisDesde_(l[c['Enviado em']]) < diasUteis) return;
+    const p = provPorCnpj[l[c['CNPJ']]];
+    const numeros = Array.from(new Set([].concat(celulares_(campo(p, pc, 'WhatsApp')),
+      celulares_(campo(p, pc, 'Telefones do site')), celulares_(campo(p, pc, 'Telefone (Receita)')))));
+    if (!numeros.length) return;
+    leads.push({ cnpj: l[c['CNPJ']], empresa: l[c['Empresa (Anatel)']], fantasia: campo(p, pc, 'Nome fantasia'),
+      celulares: numeros, enviadoEm: l[c['Enviado em']] });
+  });
+  // quem recebeu o e-mail há mais tempo vai primeiro
+  leads.sort((a, b) => String(a.enviadoEm).localeCompare(String(b.enviadoEm)));
+  return { ok: true, aba: ABA_ALVO, leads: leads.slice(0, quantidade) };
+}
+
+// Marca o WhatsApp de uma linha da aba alvo (cria as colunas no fim, se ainda não existirem).
+// soStatus = true: só troca o "WhatsApp status" (ex.: "Respondeu"), sem mexer na data/número.
+function marcarWhats_(cnpj, para, status, soStatus) {
+  const alvo = lerAba_(ABA_ALVO);
+  const i = alvo.linhas.findIndex((l) => l[0] === cnpj);
+  if (i < 0) return { ok: false, erro: 'cnpj não encontrado na aba alvo' };
+  const col = (nome) => {
+    let j = alvo.cab.indexOf(nome);
+    if (j < 0) {
+      j = alvo.cab.length;
+      alvo.aba.getRange(1, j + 1).setValue(nome).setFontWeight('bold');
+      alvo.cab.push(nome);
+    }
+    return j + 1;
+  };
+  const linha = i + 2;
+  if (!soStatus) {
+    alvo.aba.getRange(linha, col('WhatsApp em')).setValue(Utilities.formatDate(new Date(), 'America/Sao_Paulo', 'yyyy-MM-dd HH:mm'));
+    alvo.aba.getRange(linha, col('WhatsApp para')).setNumberFormat('@').setValue(para || '');
+  }
+  alvo.aba.getRange(linha, col('WhatsApp status')).setValue(status || 'Enviado');
+  return { ok: true };
 }
 
 function marcarEnviadoAlvo_(cnpj, para, status) {

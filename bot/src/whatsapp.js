@@ -9,6 +9,11 @@ const BANCO_AUTH = '.auth/state.sqlite';
 export const idsEnviadosPeloBot = new Set(); // pra ignorar o eco das próprias mensagens
 
 let cliente = null;
+// motivos de desconexão que indicam conta banida/restrita/desconectada (não é queda de rede)
+const MOTIVOS_GRAVES = ['failure_banned', 'failure_locked', 'failure_not_authorized', 'stream_error_device_removed'];
+const CODIGOS_GRAVES = [401, 402, 403, 406];
+let aoProblemaGrave = () => {};
+export function quandoProblemaGrave(fn) { aoProblemaGrave = fn; }
 
 export async function conectar() {
   mkdirSync('.auth', { recursive: true });
@@ -25,7 +30,12 @@ export async function conectar() {
   });
 
   cliente = new WaClient({ store, sessionId: 'default' }, new ConsoleLogger(process.env.LOG_LEVEL || 'warn'));
-  cliente.on('connection', (e) => log.info(`whatsapp: ${e.status} ${e.reason ?? ''}`));
+  cliente.on('connection', (e) => {
+    log.info(`whatsapp: ${e.status} ${e.reason ?? ''} ${e.code ?? ''}`);
+    if (e.status === 'close' && (e.isLogout || MOTIVOS_GRAVES.includes(e.reason) || CODIGOS_GRAVES.includes(e.code))) {
+      Promise.resolve(aoProblemaGrave(`${e.reason}${e.code ? ` (${e.code})` : ''}`)).catch(() => {});
+    }
+  });
   await cliente.connect();
 
   if (primeiraVez) {
@@ -52,4 +62,24 @@ export async function enviar(jid, texto) {
 
 export function textoDa(message) {
   return message?.conversation ?? message?.extendedTextMessage?.text ?? '';
+}
+
+// Quais destes celulares (só dígitos, com DDD, sem 55) têm WhatsApp. Não manda mensagem nenhuma.
+// Devolve [{ numero, pn, lid }] na mesma ordem, só os que existem (pn = número canônico do servidor).
+export async function comWhatsapp(numeros) {
+  const r = await cliente.profile.getLidsByPhoneNumbers(numeros.map((n) => `55${n}`));
+  return numeros.map((n) => {
+    const x = r.find((y) => usuario(y.queriedJid) === `55${n}`) || r.find((y) => usuario(y.phoneJid).endsWith(n.slice(-8)));
+    return x && x.exists ? { numero: n, pn: usuario(x.phoneJid), lid: x.lidJid ? usuario(x.lidJid) : null } : null;
+  }).filter(Boolean);
+}
+
+// Documento lido do disco só na hora (a biblioteca abre o arquivo e transmite em partes).
+export async function enviarDocumento(jid, caminho, nomeArquivo, legenda) {
+  await cliente.message.send(jid, { type: 'document', media: caminho, mimetype: 'application/pdf', fileName: nomeArquivo, caption: legenda });
+}
+
+// "5511999998888:3@s.whatsapp.net" → "5511999998888"; "12345@lid" → "12345"
+export function usuario(jid) {
+  return String(jid || '').split('@')[0].split(':')[0];
 }
