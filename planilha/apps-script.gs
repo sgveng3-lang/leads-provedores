@@ -81,6 +81,7 @@ function doPost(e) {
     if (corpo.acao === 'pendentes') return json_(corpo.aba === ABA_ALVO ? pendentesAlvo_(corpo.quantidade || 20) : pendentes_(corpo.quantidade || 20));
     if (corpo.acao === 'coluna_alvo') return json_(colunaAlvo_(corpo.nome, corpo.valores || {}));
     if (corpo.acao === 'aba_alvo') return json_(gravarAlvo_(corpo.cabecalho || [], corpo.linhas || [], corpo.formatos || {}));
+    if (corpo.acao === 'contatos_alvo') return json_(contatosAlvo_());
     if (corpo.acao === 'marcar_enviado') return json_(corpo.aba === ABA_ALVO ? marcarEnviadoAlvo_(corpo.cnpj, corpo.para, corpo.status) : marcarEnviado_(corpo.cnpj, corpo.para, corpo.status));
     return json_({ ok: false, erro: 'ação desconhecida' });
   } catch (erro) {
@@ -308,6 +309,29 @@ function pendentesAlvo_(quantidade) {
     .slice(0, quantidade);
   leads.forEach((lead) => { lead.sair = assinatura_(lead.cnpj); delete lead._pontos; });
   return { ok: true, aba: ABA_ALVO, leads: leads, enviados: Array.from(new Set(enviados)) };
+}
+
+// Só leitura: situação do e-mail de cada linha da aba alvo + telefones da aba Provedores
+// (Receita, WhatsApp do site e telefones do site), pelo CNPJ
+function contatosAlvo_() {
+  const alvo = lerAba_(ABA_ALVO);
+  const c = {};
+  alvo.cab.forEach((n, i) => { c[n] = i; });
+  const prov = lerAba_(ABA_PROVEDORES);
+  const pc = {};
+  prov.cab.forEach((n, i) => { pc[n] = i; });
+  const provPorCnpj = {};
+  prov.linhas.forEach((l) => { provPorCnpj[l[0]] = l; });
+  const campo = (l, mapa, nome) => (l && mapa[nome] !== undefined ? l[mapa[nome]] : '');
+  const linhas = alvo.linhas.map((l) => {
+    const p = provPorCnpj[l[c['CNPJ']]];
+    return {
+      cnpj: l[c['CNPJ']], status: campo(l, c, 'Status'), enviadoEm: campo(l, c, 'Enviado em'),
+      jaEnviado: campo(l, c, 'Já enviado'), telReceita: campo(p, pc, 'Telefone (Receita)'),
+      whatsSite: campo(p, pc, 'WhatsApp'), telSite: campo(p, pc, 'Telefones do site'),
+    };
+  });
+  return { ok: true, aba: ABA_ALVO, linhas: linhas };
 }
 
 // Atualiza (ou cria, antes das colunas de controle) uma coluna de dados da aba alvo
