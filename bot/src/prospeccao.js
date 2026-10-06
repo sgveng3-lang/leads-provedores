@@ -321,7 +321,8 @@ export function criarProspeccao({ estado, salvarEstado, avisar, agoraBR }) {
     }
     if (sub === 'analisar') {
       const n = Math.min(Math.max(Number(args[1]) || 30, 1), 60);
-      const { leads } = await planilha('whats_pendentes', { quantidade: n, diasUteis: DIAS_UTEIS_DEPOIS_DO_EMAIL });
+      // diasUteis -1: todos que já receberam o e-mail, mesmo os que ainda não estão na vez (0 vira 2 na planilha)
+      const { leads } = await planilha('whats_pendentes', { quantidade: n, diasUteis: -1 });
       const cont = { comercial: 0, receitaPessoal: 0, soSuporte: 0, semWhats: 0, api: 0, empresa: 0 };
       for (const lead of leads) {
         const { numeros, tipos, escolhido } = await analisarLead(lead);
@@ -331,7 +332,7 @@ export function criarProspeccao({ estado, salvarEstado, avisar, agoraBR }) {
         else if (escolhido.origem === 'comercial') cont.comercial++;
         else cont.receitaPessoal++;
       }
-      return avisar(`🔎 *Análise dos próximos ${leads.length} da fila do WhatsApp* (nada foi enviado)\n` +
+      return avisar(`🔎 *Análise de ${leads.length} provedor(es) que já receberam o e-mail* (inclui os que ainda não estão na vez; nada foi enviado)\n` +
         `✅ WhatsApp comercial do site: ${cont.comercial}\n✅ Celular pessoal (Receita, fora do site): ${cont.receitaPessoal}\n` +
         `⛔ Só suporte/empresa (pulados): ${cont.soSuporte}\n📵 Sem WhatsApp: ${cont.semWhats}\n` +
         `Números vistos: ${cont.empresa} WhatsApp Business, ${cont.api} plataforma de atendimento (robô).`);

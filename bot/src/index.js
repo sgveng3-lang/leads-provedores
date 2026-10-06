@@ -42,7 +42,7 @@ const AJUDA =
   '*whats ligar* / *whats desligar* — automático (dias úteis 14:00–17:30)\n' +
   '*whats limite 10* — mensagens por dia (máx. 15; começa com 5 e sobe sozinho)\n' +
   '*whats teste 11999998888* — manda a mensagem de teste pra esse número\n' +
-  '*whats analisar 30* — confere os números dos próximos da fila (dono x suporte/robô) sem mandar nada\n\n' +
+  '*whats analisar 30* — confere os números de quem já recebeu o e-mail (dono x suporte/robô) sem mandar nada\n\n' +
   '🎬 *Posts de vídeo* (TikTok e Instagram independentes)\n' +
   '*posts* — situação de cada rede e da fila no Drive\n' +
   '*posts tiktok ligar* / *desligar* — só o TikTok\n' +
