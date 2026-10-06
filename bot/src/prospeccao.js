@@ -11,6 +11,9 @@
 // e celulares da Receita que não aparecem no site; aqui ainda conferimos o tipo de conta:
 // plataforma de atendimento (API) nunca; WhatsApp Business só se o site rotulou como comercial;
 // celular da Receita só se for WhatsApp comum (pessoal). Se nenhum servir: "Só suporte".
+// Provedor com mais de um número bom recebe em TODOS (pedido do usuário, 06/10/2026): um por vez,
+// com o mesmo intervalo, contando no limite do dia; se alguém daquele provedor responder ou pedir
+// pra parar, os números restantes dele não recebem.
 // Se mesmo assim responder um menu automático, não manda o PDF e espera uma pessoa.
 import { log } from './base.js';
 import * as gh from './github.js';
@@ -67,22 +70,23 @@ export function pareceRobo(texto) {
   return ROBO.test(t) || itens >= 2;
 }
 
-// Qual número usar (ou null). numeros = saída de comWhatsapp; origemDe(numero) = 'comercial'|'receita'
-export function escolherNumero(numeros, tipos, origemDe) {
+// Números que podem receber (na ordem). numeros = saída de comWhatsapp; origemDe(numero) = 'comercial'|'receita'
+export function escolherNumeros(numeros, tipos, origemDe) {
+  const bons = [];
   for (let i = 0; i < numeros.length; i++) {
     const origem = origemDe(numeros[i].numero);
     if (tipos[i] === 'api') continue;
-    if (origem === 'comercial' || tipos[i] === 'pessoal') return { ...numeros[i], origem, tipo: tipos[i] };
+    if (origem === 'comercial' || tipos[i] === 'pessoal') bons.push({ ...numeros[i], origem, tipo: tipos[i] });
   }
-  return null;
+  return bons;
 }
 
-// números da fila com WhatsApp + tipo de conta + o escolhido (não manda nada)
+// números da fila com WhatsApp + tipo de conta + os escolhidos (não manda nada)
 async function analisarLead(lead) {
   const numeros = await comWhatsapp(lead.celulares);
   const tipos = numeros.length ? await tiposDeConta(numeros.map((n) => n.pn)) : [];
   const origemDe = (n) => lead.origens[lead.celulares.indexOf(n)] || 'receita';
-  return { numeros, tipos, escolhido: escolherNumero(numeros, tipos, origemDe) };
+  return { numeros, tipos, escolhidos: escolherNumeros(numeros, tipos, origemDe) };
 }
 
 async function planilha(acao, dados = {}) {
@@ -145,13 +149,13 @@ export function criarProspeccao({ estado, salvarEstado, avisar, agoraBR }) {
       const s = w();
       await refazerMarcas();
       if (s.dia !== agora.dia) {
-        Object.assign(s, { dia: agora.dia, fila: null, enviadosHoje: 0, semWhatsHoje: 0, soSuporteHoje: 0, proximoEm: 0, resumoDado: false });
+        Object.assign(s, { dia: agora.dia, fila: null, enviadosHoje: 0, semWhatsHoje: 0, soSuporteHoje: 0, extras: [], proximoEm: 0, resumoDado: false });
         limparContatosAntigos(relogio);
         salvarEstado(estado);
       }
       const m = minutoDoDia(agora);
       if (!agora.util || m < DESDE || m >= ATE || relogio < (s.proximoEm || 0)) return;
-      if (s.fila && !s.fila.length) return fecharDia();
+      if (s.fila && !s.fila.length && !s.extras?.length) return fecharDia();
       if ((await gh.lerVariavel('WHATS_LIGADO')) !== 'sim') return;
 
       if (!s.fila) {
@@ -173,15 +177,50 @@ export function criarProspeccao({ estado, salvarEstado, avisar, agoraBR }) {
     }
   }
 
+  // manda pra um número e registra; false = WhatsApp recusou (já freou)
+  async function mandarPara(lead, numero, relogio) {
+    const s = w();
+    const { pn, lid } = numero;
+    try {
+      await enviar(`${pn}@s.whatsapp.net`, textoDaMensagem(lead));
+    } catch (e) {
+      salvarEstado(estado);
+      await frear(`o WhatsApp recusou uma mensagem (${e.message})`);
+      return false;
+    }
+    s.contatos[pn] = { cnpj: lead.cnpj, nome: nomeDoProvedor(lead), lid, em: Math.floor(relogio / 1000), origem: numero.origem, tipo: numero.tipo };
+    s.enviadosHoje = (s.enviadosHoje || 0) + 1;
+    if (s.ultimoDiaComEnvio !== s.dia) {
+      s.ultimoDiaComEnvio = s.dia;
+      s.diasComEnvio = (s.diasComEnvio || 0) + 1;
+    }
+    s.proximoEm = relogio + (INTERVALO_MIN + Math.random() * (INTERVALO_MAX - INTERVALO_MIN)) * 60_000;
+    salvarEstado(estado);
+    log.info(`whats: mensagem ${s.enviadosHoje} do dia enviada`);
+    const todos = Object.keys(s.contatos).filter((k) => s.contatos[k].cnpj === lead.cnpj && !s.contatos[k].teste);
+    await marcar({ cnpj: lead.cnpj, para: todos.join(', '), status: 'Enviado' });
+    return true;
+  }
+
   async function enviarProximo(relogio) {
     const s = w();
+    // números restantes de um provedor que tem mais de um
+    while (s.extras?.length) {
+      const { lead, numero } = s.extras.shift();
+      salvarEstado(estado);
+      const doProvedor = Object.values(s.contatos).filter((c) => c.cnpj === lead.cnpj);
+      if (doProvedor.some((c) => c.respondeu || c.robo)) continue; // já responderam por outro número
+      if ((s.enviadosHoje || 0) >= (await limiteDoDia())) { s.extras = []; salvarEstado(estado); break; }
+      if (!(await mandarPara(lead, numero, relogio))) { s.extras.unshift({ lead, numero }); salvarEstado(estado); }
+      return;
+    }
     while (s.fila.length) {
       const lead = s.fila.shift();
       salvarEstado(estado);
       if (!lead.origens) continue; // fila montada antes da regra do suporte: volta amanhã pela regra nova
-      let numeros, tipos, escolhido;
+      let numeros, tipos, escolhidos;
       try {
-        ({ numeros, tipos, escolhido } = await analisarLead(lead));
+        ({ numeros, tipos, escolhidos } = await analisarLead(lead));
       } catch (e) {
         s.fila.unshift(lead);
         s.errosConsulta = (s.errosConsulta || 0) + 1;
@@ -195,29 +234,15 @@ export function criarProspeccao({ estado, salvarEstado, avisar, agoraBR }) {
         await marcar({ cnpj: lead.cnpj, para: lead.celulares.join(', '), status: 'Sem WhatsApp' });
         continue; // não conta no limite nem espera o intervalo
       }
-      if (!escolhido) {
+      if (!escolhidos.length) {
         s.soSuporteHoje = (s.soSuporteHoje || 0) + 1;
         await marcar({ cnpj: lead.cnpj, para: numeros.map((n, i) => `${n.numero} (${tipos[i]})`).join(', '), status: 'Só suporte' });
         continue;
       }
-      const { pn, lid } = escolhido;
-      try {
-        await enviar(`${pn}@s.whatsapp.net`, textoDaMensagem(lead));
-      } catch (e) {
-        s.fila.unshift(lead); // não foi: continua elegível depois que religarem
-        salvarEstado(estado);
-        return frear(`o WhatsApp recusou uma mensagem (${e.message})`);
-      }
-      s.contatos[pn] = { cnpj: lead.cnpj, nome: nomeDoProvedor(lead), lid, em: Math.floor(relogio / 1000), origem: escolhido.origem, tipo: escolhido.tipo };
-      s.enviadosHoje = (s.enviadosHoje || 0) + 1;
-      if (s.ultimoDiaComEnvio !== s.dia) {
-        s.ultimoDiaComEnvio = s.dia;
-        s.diasComEnvio = (s.diasComEnvio || 0) + 1;
-      }
-      s.proximoEm = relogio + (INTERVALO_MIN + Math.random() * (INTERVALO_MAX - INTERVALO_MIN)) * 60_000;
+      // não foi: o freio já desligou; o provedor não foi marcado e volta na fila quando religarem
+      if (!(await mandarPara(lead, escolhidos[0], relogio))) return;
+      (s.extras ||= []).push(...escolhidos.slice(1).map((numero) => ({ lead, numero })));
       salvarEstado(estado);
-      log.info(`whats: mensagem ${s.enviadosHoje} do dia enviada`);
-      await marcar({ cnpj: lead.cnpj, para: pn, status: 'Enviado' });
       return;
     }
     return fecharDia();
@@ -257,6 +282,8 @@ export function criarProspeccao({ estado, salvarEstado, avisar, agoraBR }) {
     salvarEstado(estado);
     if (texto && querSair(texto)) {
       await enviar(`${pn}@s.whatsapp.net`, RESPOSTA_SAIR).catch((e) => log.erro('whats sair', e.message));
+      s.extras = (s.extras || []).filter((x) => x.lead.cnpj !== c.cnpj);
+      salvarEstado(estado);
       if (!c.teste) await marcar({ cnpj: c.cnpj, status: 'Não quer WhatsApp', soStatus: true });
       await avisar(`🙅 *${c.nome}* pediu pra não receber mais WhatsApp: ${trecho}\nMarcado na aba alvo; não mandamos mais nada.`);
       return true;
@@ -325,7 +352,8 @@ export function criarProspeccao({ estado, salvarEstado, avisar, agoraBR }) {
       const { leads } = await planilha('whats_pendentes', { quantidade: n, diasUteis: -1 });
       const cont = { comercial: 0, receitaPessoal: 0, soSuporte: 0, semWhats: 0, api: 0, empresa: 0 };
       for (const lead of leads) {
-        const { numeros, tipos, escolhido } = await analisarLead(lead);
+        const { numeros, tipos, escolhidos } = await analisarLead(lead);
+        const escolhido = escolhidos[0];
         tipos.forEach((t) => { if (t === 'api') cont.api++; else if (t === 'empresa') cont.empresa++; });
         if (!numeros.length) cont.semWhats++;
         else if (!escolhido) cont.soSuporte++;
