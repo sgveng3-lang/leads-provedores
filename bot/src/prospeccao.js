@@ -12,8 +12,8 @@
 // plataforma de atendimento (API) nunca; WhatsApp Business só se o site rotulou como comercial;
 // celular da Receita só se for WhatsApp comum (pessoal). Se nenhum servir: "Só suporte".
 // Provedor com mais de um número bom recebe em TODOS (pedido do usuário, 06/10/2026): um por vez,
-// com o mesmo intervalo, contando no limite do dia; se alguém daquele provedor responder ou pedir
-// pra parar, os números restantes dele não recebem.
+// com o mesmo intervalo, contando no limite do dia; se uma pessoa daquele provedor responder ou pedir
+// pra parar, os números restantes dele não recebem (menu automático não para: segue pro próximo número).
 // Se mesmo assim responder um menu automático, não manda o PDF e espera uma pessoa.
 import { log } from './base.js';
 import * as gh from './github.js';
@@ -209,7 +209,7 @@ export function criarProspeccao({ estado, salvarEstado, avisar, agoraBR }) {
       const { lead, numero } = s.extras.shift();
       salvarEstado(estado);
       const doProvedor = Object.values(s.contatos).filter((c) => c.cnpj === lead.cnpj);
-      if (doProvedor.some((c) => c.respondeu || c.robo)) continue; // já responderam por outro número
+      if (doProvedor.some((c) => c.respondeu)) continue; // uma pessoa já respondeu por outro número (menu automático não conta)
       if ((s.enviadosHoje || 0) >= (await limiteDoDia())) { s.extras = []; salvarEstado(estado); break; }
       if (!(await mandarPara(lead, numero, relogio))) { s.extras.unshift({ lead, numero }); salvarEstado(estado); }
       return;
