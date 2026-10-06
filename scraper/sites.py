@@ -106,6 +106,63 @@ def whatsapps_do_texto(*textos):
     return list(achados)
 
 
+# Rótulo de um número pelo texto em volta: o WhatsApp de suporte quase sempre cai num robô;
+# o comercial/vendas costuma ir pra uma pessoa (às vezes o próprio dono).
+RE_ROTULO_COMERCIAL = re.compile(
+    r"comercial|vendas?\b|vendedor|seja (nosso )?cliente|quero (ser cliente|contratar|assinar)|assin(e|ar|atura)\b|"
+    r"contrat(e|ar|acao)\b|novos? clientes?|diretori|diretor|propriet|gerente|parcer|corporativ|empresarial|negocios|orcamento")
+RE_ROTULO_SUPORTE = re.compile(
+    r"suporte|tecnic|atendimento|\bsac\b|central|2a via|segunda via|boleto|financeiro|cobranca|chamado|ouvidoria|"
+    r"assistencia|help|\bnoc\b|plantao|24 ?h|ja sou cliente|reclama|desbloque|fatura|sou cliente")
+
+
+def rotulo(texto, pos=None):
+    """'comercial', 'suporte' ou 'geral'. Com pos (posição do número no texto), vale a palavra
+    mais perto (a de antes pesa mais: "Comercial: (37) 9..."); empate ou sem pos com as duas = suporte."""
+    t = _sem_acento(texto)
+    def distancia(regex):
+        ds = [0 if pos is None else (pos - m.end() if m.end() <= pos else 2 * (m.start() - pos)) for m in regex.finditer(t)]
+        return min(ds) if ds else None
+    c, s = distancia(RE_ROTULO_COMERCIAL), distancia(RE_ROTULO_SUPORTE)
+    if c is None:
+        return "suporte" if s is not None else "geral"
+    return "comercial" if s is None or c < s else "suporte"
+
+
+def _celular(numero):
+    """Só dígitos com DDD (sem 55) → '+55DDD9XXXXXXXX' se for celular; senão ''."""
+    n = re.sub(r"\D", "", numero)
+    n = n[2:] if n.startswith("55") and len(n) in (12, 13) else n
+    if len(n) == 10 and n[2] in "6789":  # formato antigo, sem o 9
+        n = n[:2] + "9" + n[2:]
+    return f"+55{n}" if len(n) == 11 and n[2] == "9" and 11 <= int(n[:2]) <= 99 else ""
+
+
+def whatsapps_comerciais(sopa, texto):
+    """Celulares que o site rotula como comercial/vendas (link de WhatsApp ou número no texto)."""
+    achados = {}
+    for a in sopa.find_all("a", href=True):
+        href = a["href"]
+        m = RE_WHATS.search(href)
+        if not m:
+            continue
+        pai = a.parent.get_text(" ", strip=True)[:150] if a.parent else ""
+        msg = unquote(parse_qs(urlparse(href).query).get("text", [""])[0])  # "Olá, quero contratar..."
+        contexto = " ".join([a.get_text(" ", strip=True), a.get("title", ""), a.get("aria-label", ""), msg, pai])
+        if rotulo(contexto) == "comercial" and _celular(m.group(1)):
+            achados[_celular(m.group(1))] = True
+    for regex in (RE_WHATS_TEXTO, RE_TEL):
+        for m in regex.finditer(texto):
+            numero = _celular("".join(m.groups()))
+            if not numero:
+                continue
+            inicio = max(0, m.start() - 60)
+            janela = texto[inicio:m.end() + 30]
+            if rotulo(janela, m.start() - inicio) == "comercial":
+                achados[numero] = True
+    return list(achados)
+
+
 class Raspador:
     def __init__(self):
         self.sessao = requests.Session()
@@ -221,7 +278,7 @@ class Raspador:
     def contatos(self, url_inicial, html_inicial=None, fichas=()):
         dominio = dominio_registravel(urlparse(url_inicial).netloc)
         visitadas, fila = set(), [url_inicial]
-        emails, whats, telefones = {}, {}, {}
+        emails, whats, telefones, comerciais = {}, {}, {}, {}
         primeira = True
         while fila and len(visitadas) < MAX_PAGINAS:
             url = fila.pop(0)
@@ -248,6 +305,8 @@ class Raspador:
                     emails[e] = True
             for numero in whatsapps_do_texto(texto, *hrefs):
                 whats[numero] = True
+            for numero in whatsapps_comerciais(sopa, texto):
+                comerciais[numero] = True
             for m in RE_0800.findall(texto):
                 telefones[re.sub(r"[\s.-]", "", m)] = True
             for ddd, a, b in RE_TEL.findall(texto):
@@ -262,8 +321,9 @@ class Raspador:
                         fila.append(destino)
         return {
             "emails": list(emails)[:5],
-            "whatsapp": [f"+{w}" for w in list(whats)[:3]],
-            "telefones": list(telefones)[:4],
+            "whatsapp": [f"+{w}" for w in list(whats)[:5]],
+            "telefones": list(telefones)[:8],
+            "whats_comercial": list(comerciais)[:3],
         }
 
     def processar(self, prov):
@@ -276,7 +336,7 @@ class Raspador:
         resultados = self.buscar(f'{nome} provedor internet {municipio} {prov.get("uf_principal", "")}')
 
         pagina = self.site_pelo_email(rec.get("email", "")) or self.site_pela_busca(resultados, fichas)
-        achado = {"site": "", "emails": [], "whatsapp": [], "telefones": []}
+        achado = {"site": "", "emails": [], "whatsapp": [], "telefones": [], "whats_comercial": []}
         if pagina:
             achado = {"site": f"https://{urlparse(pagina[0]).netloc}", **self.contatos(pagina[0], pagina[1], fichas)}
 
@@ -291,5 +351,5 @@ class Raspador:
         whats = dict.fromkeys(w.lstrip("+") for w in achado["whatsapp"])
         whats.update(dict.fromkeys(whatsapps_do_texto(*textos)))
         achado["emails"] = list(emails)[:5]
-        achado["whatsapp"] = [f"+{w}" for w in list(whats)[:3]]
+        achado["whatsapp"] = [f"+{w}" for w in list(whats)[:5]]
         return achado

@@ -74,6 +74,18 @@ export async function comWhatsapp(numeros) {
   }).filter(Boolean);
 }
 
+// Tipo de conta de cada número (pn = só dígitos com 55), sem mandar mensagem:
+// 'pessoal' (WhatsApp comum — no provedor pequeno, geralmente o celular de uma pessoa),
+// 'empresa' (WhatsApp Business) ou 'api' (plataforma de atendimento: quase sempre robô).
+export async function tiposDeConta(pns) {
+  const r = await cliente.business.getVerifiedNames(pns.map((pn) => `${pn}@s.whatsapp.net`));
+  const porPn = new Map(r.map((x) => [usuario(x.jid), x.verifiedName]));
+  return pns.map((pn) => {
+    const vn = porPn.get(pn);
+    return !vn ? 'pessoal' : vn.isApi ? 'api' : 'empresa';
+  });
+}
+
 // Documento lido do disco só na hora (a biblioteca abre o arquivo e transmite em partes).
 export async function enviarDocumento(jid, caminho, nomeArquivo, legenda) {
   await cliente.message.send(jid, { type: 'document', media: caminho, mimetype: 'application/pdf', fileName: nomeArquivo, caption: legenda });

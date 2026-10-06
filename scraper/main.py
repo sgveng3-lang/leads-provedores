@@ -108,6 +108,7 @@ def _linha(prov, contatos):
         "E-mails do site": ", ".join(contatos.get("emails", [])),
         "WhatsApp": ", ".join(contatos.get("whatsapp", [])),
         "Telefones do site": ", ".join(contatos.get("telefones", [])),
+        "WhatsApp comercial": ", ".join(contatos.get("whats_comercial", [])),
     }
 
 

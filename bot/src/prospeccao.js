@@ -6,9 +6,15 @@
 // Cuidados contra bloqueio: começa com 5/dia (10 depois de 5 dias com envio, 15 depois
 // de 10), intervalo de 8–15 min, 4 versões do texto, só números confirmados no WhatsApp,
 // e freio automático (qualquer falha de envio ou sinal de restrição desliga tudo).
+//
+// Evita o suporte (que responde com robô): a planilha só manda o WhatsApp comercial do site
+// e celulares da Receita que não aparecem no site; aqui ainda conferimos o tipo de conta:
+// plataforma de atendimento (API) nunca; WhatsApp Business só se o site rotulou como comercial;
+// celular da Receita só se for WhatsApp comum (pessoal). Se nenhum servir: "Só suporte".
+// Se mesmo assim responder um menu automático, não manda o PDF e espera uma pessoa.
 import { log } from './base.js';
 import * as gh from './github.js';
-import { comWhatsapp, enviar, enviarDocumento, usuario } from './whatsapp.js';
+import { comWhatsapp, enviar, enviarDocumento, tiposDeConta, usuario } from './whatsapp.js';
 
 const DESDE = 14 * 60; // minutos do dia (horário de Brasília)
 const ATE = 17 * 60 + 30;
@@ -52,6 +58,32 @@ export function textoDaMensagem(lead, sorteio = Math.random()) {
 }
 
 export const querSair = (texto) => QUER_SAIR.test(String(texto || '').trim());
+
+// menu/aviso automático: "Digite 1 para...", "1️⃣ Suporte", "Protocolo: ...", "assistente virtual"...
+const ROBO = /\b(digite|op[cç](ao|ão|oes|ões)|escolha uma|menu|protocolo|atendimento autom|assistente virtual|atendente virtual|mensagem autom|resposta autom|hor[aá]rio de atendimento|retornaremos|aguarde)/i;
+export function pareceRobo(texto) {
+  const t = String(texto || '');
+  const itens = (t.match(/(^|\n)\s*\*?\s*([1-9]️?⃣|[1-9]\s*[-–).:])/g) || []).length;
+  return ROBO.test(t) || itens >= 2;
+}
+
+// Qual número usar (ou null). numeros = saída de comWhatsapp; origemDe(numero) = 'comercial'|'receita'
+export function escolherNumero(numeros, tipos, origemDe) {
+  for (let i = 0; i < numeros.length; i++) {
+    const origem = origemDe(numeros[i].numero);
+    if (tipos[i] === 'api') continue;
+    if (origem === 'comercial' || tipos[i] === 'pessoal') return { ...numeros[i], origem, tipo: tipos[i] };
+  }
+  return null;
+}
+
+// números da fila com WhatsApp + tipo de conta + o escolhido (não manda nada)
+async function analisarLead(lead) {
+  const numeros = await comWhatsapp(lead.celulares);
+  const tipos = numeros.length ? await tiposDeConta(numeros.map((n) => n.pn)) : [];
+  const origemDe = (n) => lead.origens[lead.celulares.indexOf(n)] || 'receita';
+  return { numeros, tipos, escolhido: escolherNumero(numeros, tipos, origemDe) };
+}
 
 async function planilha(acao, dados = {}) {
   const r = await fetch(process.env.PLANILHA_URL, {
@@ -113,7 +145,7 @@ export function criarProspeccao({ estado, salvarEstado, avisar, agoraBR }) {
       const s = w();
       await refazerMarcas();
       if (s.dia !== agora.dia) {
-        Object.assign(s, { dia: agora.dia, fila: null, enviadosHoje: 0, semWhatsHoje: 0, proximoEm: 0, resumoDado: false });
+        Object.assign(s, { dia: agora.dia, fila: null, enviadosHoje: 0, semWhatsHoje: 0, soSuporteHoje: 0, proximoEm: 0, resumoDado: false });
         limparContatosAntigos(relogio);
         salvarEstado(estado);
       }
@@ -146,9 +178,10 @@ export function criarProspeccao({ estado, salvarEstado, avisar, agoraBR }) {
     while (s.fila.length) {
       const lead = s.fila.shift();
       salvarEstado(estado);
-      let numeros;
+      if (!lead.origens) continue; // fila montada antes da regra do suporte: volta amanhã pela regra nova
+      let numeros, tipos, escolhido;
       try {
-        numeros = await comWhatsapp(lead.celulares);
+        ({ numeros, tipos, escolhido } = await analisarLead(lead));
       } catch (e) {
         s.fila.unshift(lead);
         s.errosConsulta = (s.errosConsulta || 0) + 1;
@@ -162,7 +195,12 @@ export function criarProspeccao({ estado, salvarEstado, avisar, agoraBR }) {
         await marcar({ cnpj: lead.cnpj, para: lead.celulares.join(', '), status: 'Sem WhatsApp' });
         continue; // não conta no limite nem espera o intervalo
       }
-      const { pn, lid } = numeros[0];
+      if (!escolhido) {
+        s.soSuporteHoje = (s.soSuporteHoje || 0) + 1;
+        await marcar({ cnpj: lead.cnpj, para: numeros.map((n, i) => `${n.numero} (${tipos[i]})`).join(', '), status: 'Só suporte' });
+        continue;
+      }
+      const { pn, lid } = escolhido;
       try {
         await enviar(`${pn}@s.whatsapp.net`, textoDaMensagem(lead));
       } catch (e) {
@@ -170,7 +208,7 @@ export function criarProspeccao({ estado, salvarEstado, avisar, agoraBR }) {
         salvarEstado(estado);
         return frear(`o WhatsApp recusou uma mensagem (${e.message})`);
       }
-      s.contatos[pn] = { cnpj: lead.cnpj, nome: nomeDoProvedor(lead), lid, em: Math.floor(relogio / 1000) };
+      s.contatos[pn] = { cnpj: lead.cnpj, nome: nomeDoProvedor(lead), lid, em: Math.floor(relogio / 1000), origem: escolhido.origem, tipo: escolhido.tipo };
       s.enviadosHoje = (s.enviadosHoje || 0) + 1;
       if (s.ultimoDiaComEnvio !== s.dia) {
         s.ultimoDiaComEnvio = s.dia;
@@ -190,9 +228,11 @@ export function criarProspeccao({ estado, salvarEstado, avisar, agoraBR }) {
     if (s.resumoDado) return;
     s.resumoDado = true;
     salvarEstado(estado);
-    if (!s.enviadosHoje && !s.semWhatsHoje) return;
+    if (!s.enviadosHoje && !s.semWhatsHoje && !s.soSuporteHoje) return;
     await avisar(`💬 WhatsApp do dia concluído: *${s.enviadosHoje || 0}* enviada(s)` +
-      (s.semWhatsHoje ? `, ${s.semWhatsHoje} provedor(es) sem WhatsApp nos números que temos (marcados na aba alvo)` : '') + '.');
+      (s.semWhatsHoje ? `, ${s.semWhatsHoje} provedor(es) sem WhatsApp nos números que temos` : '') +
+      (s.soSuporteHoje ? `, ${s.soSuporteHoje} pulado(s) por só ter número de suporte/empresa` : '') +
+      ((s.semWhatsHoje || s.soSuporteHoje) ? ' (marcados na aba alvo)' : '') + '.');
   }
 
   // mensagem 1:1 recebida (não do grupo): se for de alguém que prospectamos, trata a 1ª resposta
@@ -203,9 +243,18 @@ export function criarProspeccao({ estado, salvarEstado, avisar, agoraBR }) {
     if (!pn) return false;
     const c = s.contatos[pn];
     if (c.respondeu) return true; // da 2ª mensagem em diante, quem conversa é a pessoa no celular
+    const trecho = texto ? `"${texto.slice(0, 200)}${texto.length > 200 ? '…' : ''}"` : '(mídia/áudio)';
+    if (texto && pareceRobo(texto) && !querSair(texto)) { // menu automático: sem PDF, espera uma pessoa
+      if (!c.robo) {
+        c.robo = true;
+        salvarEstado(estado);
+        if (!c.teste) await marcar({ cnpj: c.cnpj, status: 'Robô respondeu', soStatus: true });
+        await avisar(`🤖 *${c.nome}* respondeu com mensagem automática: ${trecho}\nNão mandei o PDF; se uma pessoa responder depois, aviso aqui.`);
+      }
+      return true;
+    }
     c.respondeu = true;
     salvarEstado(estado);
-    const trecho = texto ? `"${texto.slice(0, 200)}${texto.length > 200 ? '…' : ''}"` : '(mídia/áudio)';
     if (texto && querSair(texto)) {
       await enviar(`${pn}@s.whatsapp.net`, RESPOSTA_SAIR).catch((e) => log.erro('whats sair', e.message));
       if (!c.teste) await marcar({ cnpj: c.cnpj, status: 'Não quer WhatsApp', soStatus: true });
@@ -270,7 +319,24 @@ export function criarProspeccao({ estado, salvarEstado, avisar, agoraBR }) {
       salvarEstado(estado);
       return avisar(`🧪 Mensagem de TESTE enviada pra +${achado.pn}. Responda de lá pra ver o PDF chegando e o aviso aqui (nada é marcado na planilha).`);
     }
-    return avisar('Opções: *whats*, *whats ligar*, *whats desligar*, *whats limite N*, *whats teste 11999998888*');
+    if (sub === 'analisar') {
+      const n = Math.min(Math.max(Number(args[1]) || 30, 1), 60);
+      const { leads } = await planilha('whats_pendentes', { quantidade: n, diasUteis: DIAS_UTEIS_DEPOIS_DO_EMAIL });
+      const cont = { comercial: 0, receitaPessoal: 0, soSuporte: 0, semWhats: 0, api: 0, empresa: 0 };
+      for (const lead of leads) {
+        const { numeros, tipos, escolhido } = await analisarLead(lead);
+        tipos.forEach((t) => { if (t === 'api') cont.api++; else if (t === 'empresa') cont.empresa++; });
+        if (!numeros.length) cont.semWhats++;
+        else if (!escolhido) cont.soSuporte++;
+        else if (escolhido.origem === 'comercial') cont.comercial++;
+        else cont.receitaPessoal++;
+      }
+      return avisar(`🔎 *Análise dos próximos ${leads.length} da fila do WhatsApp* (nada foi enviado)\n` +
+        `✅ WhatsApp comercial do site: ${cont.comercial}\n✅ Celular pessoal (Receita, fora do site): ${cont.receitaPessoal}\n` +
+        `⛔ Só suporte/empresa (pulados): ${cont.soSuporte}\n📵 Sem WhatsApp: ${cont.semWhats}\n` +
+        `Números vistos: ${cont.empresa} WhatsApp Business, ${cont.api} plataforma de atendimento (robô).`);
+    }
+    return avisar('Opções: *whats*, *whats ligar*, *whats desligar*, *whats limite N*, *whats teste 11999998888*, *whats analisar 30*');
   }
 
   return { tique, mensagemRecebida, comando, frear, limparContatosAntigos };

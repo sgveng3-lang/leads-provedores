@@ -25,6 +25,7 @@ const COLUNAS = [
   'Site', 'E-mails do site', 'WhatsApp', 'Telefones do site',
   'Status', 'Observações', 'Primeira captura', 'Atualizado em',
   'Enviado em', 'Enviado para', 'Já enviado',
+  'WhatsApp comercial',
 ];
 // colunas que o scraper nunca sobrescreve (suas + as do envio de e-mail)
 const COLUNAS_DO_USUARIO = ['Status', 'Observações', 'Enviado em', 'Enviado para', 'Já enviado'];
@@ -334,6 +335,7 @@ function contatosAlvo_() {
       cnpj: l[c['CNPJ']], status: campo(l, c, 'Status'), enviadoEm: campo(l, c, 'Enviado em'),
       jaEnviado: campo(l, c, 'Já enviado'), telReceita: campo(p, pc, 'Telefone (Receita)'),
       whatsSite: campo(p, pc, 'WhatsApp'), telSite: campo(p, pc, 'Telefones do site'),
+      whatsComercial: campo(p, pc, 'WhatsApp comercial'), site: campo(p, pc, 'Site'),
     };
   });
   return { ok: true, aba: ABA_ALVO, linhas: linhas };
@@ -384,9 +386,19 @@ function diasUteisDesde_(texto) {
   return n;
 }
 
+// Finais (8 últimos dígitos) de todos os telefones de um texto, fixos ou celulares
+function finais_(texto) {
+  return (String(texto || '').match(/(\+?55[\s.-]?)?\(?0?\d{2}\)?[\s.-]?9?[\s.]?\d{4}[\s.-]?\d{4}\b/g) || [])
+    .map((t) => t.replace(/\D/g, '').slice(-8));
+}
+
 // Fila do WhatsApp: quem recebeu o e-mail há pelo menos N dias úteis (endereço aceito),
 // segue com Status "Enviado" (você não mexeu), ainda não teve WhatsApp e tem celular.
-// Ordem dos celulares: WhatsApp do site, celular do site, celular da Receita. E-mail mais antigo primeiro.
+// Evita o SUPORTE (que cai em robô): só entram o WhatsApp que o site rotula como comercial/vendas
+// e celulares da Receita que NÃO aparecem no site (no site ficam os números do atendimento;
+// o da Receita, quando é outro, costuma ser de quem abriu a empresa). WhatsApp genérico do site
+// e telefones do site sem rótulo ficam de fora. origens[i] diz de onde veio celulares[i].
+// E-mail mais antigo primeiro.
 function whatsPendentes_(quantidade, diasUteis) {
   const alvo = lerAba_(ABA_ALVO);
   if (!alvo.linhas.length) return { ok: true, aba: ABA_ALVO, leads: [] };
@@ -405,11 +417,20 @@ function whatsPendentes_(quantidade, diasUteis) {
     if (campo(l, c, 'WhatsApp status')) return;
     if (diasUteisDesde_(l[c['Enviado em']]) < diasUteis) return;
     const p = provPorCnpj[l[c['CNPJ']]];
-    const numeros = Array.from(new Set([].concat(celulares_(campo(p, pc, 'WhatsApp')),
-      celulares_(campo(p, pc, 'Telefones do site')), celulares_(campo(p, pc, 'Telefone (Receita)')))));
+    const comerciais = celulares_(campo(p, pc, 'WhatsApp comercial'));
+    const doSite = {};
+    finais_(campo(p, pc, 'WhatsApp') + ' ' + campo(p, pc, 'Telefones do site')).forEach((f) => { doSite[f] = true; });
+    comerciais.forEach((n) => { delete doSite[n.slice(-8)]; });
+    const daReceita = celulares_(campo(p, pc, 'Telefone (Receita)')).filter((n) => !doSite[n.slice(-8)]);
+    const numeros = [], origens = [];
+    comerciais.concat(daReceita).forEach((n, i) => {
+      if (numeros.includes(n)) return;
+      numeros.push(n);
+      origens.push(i < comerciais.length ? 'comercial' : 'receita');
+    });
     if (!numeros.length) return;
     leads.push({ cnpj: l[c['CNPJ']], empresa: l[c['Empresa (Anatel)']], fantasia: campo(p, pc, 'Nome fantasia'),
-      celulares: numeros, enviadoEm: l[c['Enviado em']] });
+      celulares: numeros, origens: origens, enviadoEm: l[c['Enviado em']] });
   });
   // quem recebeu o e-mail há mais tempo vai primeiro
   leads.sort((a, b) => String(a.enviadoEm).localeCompare(String(b.enviadoEm)));
