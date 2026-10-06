@@ -9,6 +9,7 @@ const BANCO_AUTH = '.auth/state.sqlite';
 export const idsEnviadosPeloBot = new Set(); // pra ignorar o eco das próprias mensagens
 
 let cliente = null;
+let store = null;
 // motivos de desconexão que indicam conta banida/restrita/desconectada (não é queda de rede)
 const MOTIVOS_GRAVES = ['failure_banned', 'failure_locked', 'failure_not_authorized', 'stream_error_device_removed'];
 const CODIGOS_GRAVES = [401, 402, 403, 406];
@@ -19,7 +20,7 @@ export async function conectar() {
   mkdirSync('.auth', { recursive: true });
   const primeiraVez = !existsSync(BANCO_AUTH);
   const sqlite = createSqliteStore({ path: BANCO_AUTH, driver: 'auto' });
-  const store = createStore({
+  store = createStore({
     backends: { sqlite },
     providers: {
       auth: 'sqlite', signal: 'sqlite', preKey: 'sqlite', session: 'sqlite', identity: 'sqlite',
@@ -44,6 +45,16 @@ export async function conectar() {
     log.info('No celular do número do bot: WhatsApp > Dispositivos conectados > Conectar com número de telefone.');
   }
   return cliente;
+}
+
+// Desligamento limpo (o Discloud manda SIGTERM ao atualizar/reiniciar): fecha o WhatsApp e o
+// SQLite da sessão ANTES de sair. Sem isso o processo saía com o banco aberto e o better-sqlite3
+// às vezes quebrava na saída (código 139, 06/10/2026), e o Discloud não religava sozinho.
+export async function encerrar() {
+  if (cliente) await cliente.disconnect().catch(() => {});
+  if (store) await store.destroy().catch(() => {});
+  cliente = null;
+  store = null;
 }
 
 export async function acharGrupo(nome) {

@@ -9,7 +9,7 @@
 import { carregarEnv, lerEstado, log, salvarEstado } from './base.js';
 import * as gh from './github.js';
 import { criarProspeccao } from './prospeccao.js';
-import { acharGrupo, conectar, enviar, idsEnviadosPeloBot, quandoProblemaGrave, textoDa } from './whatsapp.js';
+import { acharGrupo, conectar, encerrar, enviar, idsEnviadosPeloBot, quandoProblemaGrave, textoDa } from './whatsapp.js';
 
 carregarEnv();
 carregarEnv('.env.planilha'); // PLANILHA_URL e PLANILHA_TOKEN (WhatsApp de prospecção)
@@ -628,6 +628,19 @@ quandoProblemaGrave(async (motivo) => {
   if ((await gh.lerVariavel('WHATS_LIGADO')) === 'sim') await prospeccao.frear(`o WhatsApp desconectou o bot: ${motivo}`);
 });
 const cliente = await conectar();
+
+// SIGTERM/SIGINT (atualização ou reinício no Discloud): fecha a sessão com cuidado e sai com 0.
+// Se travar, sai mesmo assim depois de 8 s. O estado (.dados) já é gravado a cada mudança.
+let saindo = false;
+for (const sinal of ['SIGTERM', 'SIGINT']) {
+  process.on(sinal, () => {
+    if (saindo) return;
+    saindo = true;
+    log.info(`${sinal} recebido: encerrando`);
+    setTimeout(() => process.exit(0), 8_000).unref();
+    encerrar().finally(() => process.exit(0));
+  });
+}
 
 const MIDIA = ['imageMessage', 'audioMessage', 'videoMessage', 'documentMessage', 'stickerMessage', 'contactMessage', 'locationMessage'];
 
