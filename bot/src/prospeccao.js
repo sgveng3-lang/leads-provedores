@@ -360,10 +360,12 @@ export function criarProspeccao({ estado, salvarEstado, avisar, agoraBR }) {
         else if (escolhido.origem === 'comercial') cont.comercial++;
         else cont.receitaPessoal++;
       }
-      return avisar(`🔎 *Análise de ${leads.length} provedor(es) que já receberam o e-mail* (inclui os que ainda não estão na vez; nada foi enviado)\n` +
+      const texto = `🔎 *Análise de ${leads.length} provedor(es) que já receberam o e-mail* (inclui os que ainda não estão na vez; nada foi enviado)\n` +
         `✅ WhatsApp comercial do site: ${cont.comercial}\n✅ Celular pessoal (Receita, fora do site): ${cont.receitaPessoal}\n` +
         `⛔ Só suporte/empresa (pulados): ${cont.soSuporte}\n📵 Sem WhatsApp: ${cont.semWhats}\n` +
-        `Números vistos: ${cont.empresa} WhatsApp Business, ${cont.api} plataforma de atendimento (robô).`);
+        `Números vistos: ${cont.empresa} WhatsApp Business, ${cont.api} plataforma de atendimento (robô).`;
+      log.info('whats analisar:', JSON.stringify({ provedores: leads.length, ...cont })); // só contagens
+      return avisar(texto);
     }
     return avisar('Opções: *whats*, *whats ligar*, *whats desligar*, *whats limite N*, *whats teste 11999998888*, *whats analisar 30*');
   }

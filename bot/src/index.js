@@ -684,6 +684,16 @@ async function prepararGrupo() {
 }
 
 await prepararGrupo();
+// autoteste único (06/10/2026): confere a separação pessoal/empresa/robô na fila do WhatsApp
+// (não envia nada) e posta o resultado no grupo; as contagens também vão pro log
+if (estado.grupoJid && estado.autoteste !== 'tipos-1') {
+  estado.autoteste = 'tipos-1';
+  salvarEstado(estado);
+  prospeccao.comando(['analisar', '30']).catch((e) => {
+    log.erro('autoteste whats', e.message);
+    avisar(`⚠️ Autoteste do WhatsApp falhou: ${e.message}`).catch(() => {});
+  });
+}
 agendar(10_000);
 setInterval(agendamentos, 60_000);
 log.info('bot no ar');
