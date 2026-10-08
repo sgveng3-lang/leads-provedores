@@ -44,9 +44,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           desde="$(date -u -d '3 hours ago' +%F)T03:00:00Z"   # meia-noite de Brasília (UTC-3) em UTC
-          n=$(gh run list -R "$GITHUB_REPOSITORY" -w enviar.yml -L 30 --json displayTitle,createdAt \
-            --jq "[.[] | select((.displayTitle | endswith(\"diario\")) and .createdAt >= \"$desde\")] | length")
-          echo "envios do bot desde $desde: $n"
+          # conta envios disparados (bot/manual) que deram certo ou ainda estão rodando; um que falhou não impede a reserva
+          n=$(gh run list -R "$GITHUB_REPOSITORY" -w enviar.yml -L 30 --json event,conclusion,createdAt \
+            --jq "[.[] | select(.event == \"workflow_dispatch\" and (.conclusion == \"success\" or .conclusion == \"\") and .createdAt >= \"$desde\")] | length")
+          echo "envios disparados (ok ou em andamento) desde $desde: $n"
           echo "ja_enviou=$([ "$n" -gt 0 ] && echo sim || echo nao)" >> "$GITHUB_OUTPUT"
 
   enviar:

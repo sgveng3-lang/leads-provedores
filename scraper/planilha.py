@@ -25,7 +25,8 @@ class Planilha:
                     raise
                 time.sleep(20 + random.uniform(0, 20))
                 continue
-            if dados.get("ok"):
+            # o Google às vezes entrega o doGet ({ok, servico}) no lugar da resposta do POST: tenta de novo
+            if dados.get("ok") and "servico" not in dados:
                 return dados
             erro = str(dados.get("erro", ""))
             if "token inválido" in erro or "ação desconhecida" in erro:
